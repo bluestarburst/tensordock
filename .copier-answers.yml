@@ -1,0 +1,14 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: v4.2.5
+_src_path: https://github.com/jupyterlab/extension-template
+author_email: hargreaves.bryant@gmail.com
+author_name: Bryant Hargreaves
+has_binder: true
+has_settings: false
+kind: frontend
+labextension_name: Jupyter-Tensorboard
+project_short_description: A JupyterLab extension.
+python_name: Jupyter_Tensorboard
+repository: ''
+test: true
+
