@@ -14,7 +14,9 @@ import {
   NotebookPanel,
   INotebookModel,
   INotebookTracker,
-  NotebookActions
+  NotebookActions,
+  NotebookModel,
+  CellList
 } from '@jupyterlab/notebook';
 
 /**
@@ -59,7 +61,7 @@ function activate(app: JupyterFrontEnd, notebookTracker: INotebookTracker) {
 
   const ws = new WebSocket('ws://localhost:3000');
   ws.onopen = () => {
-    ws.send('Hello, Server');
+    ws.send(JSON.stringify({ type: 'jupyter', data: '' }));
   };
   ws.onmessage = event => {
     console.log('Message from server ', event.data);
@@ -67,8 +69,12 @@ function activate(app: JupyterFrontEnd, notebookTracker: INotebookTracker) {
     switch (data.type) {
       case 'runCell':
         // run cell at index
-        console.log('Running cells');
-        Private.runAll(notebookTracker);
+        console.log('Running cell ' + data.data);
+        // Private.runAll(notebookTracker);
+        Private.runCell(notebookTracker, data.data, ws);
+        break;
+      case 'setNotebook':
+        Private.setNotebook(notebookTracker, JSON.parse(data.data));
         break;
       default:
         console.log('Unknown message');
@@ -92,7 +98,7 @@ namespace Private {
    */
   export function createNode(): HTMLElement {
     const span = document.createElement('span');
-    span.textContent = 'If you are seeing this, the extension is working!';
+    span.textContent = 'If you are seeing this, the extension is working!!';
     return span;
   }
 
@@ -107,5 +113,56 @@ namespace Private {
         console.log('Running cells');
       }
     }
+  }
+
+  export function runCell(
+    notebookTracker: INotebookTracker,
+    index: number,
+    ws: WebSocket
+  ) {
+    if (
+      notebookTracker.currentWidget &&
+      notebookTracker.currentWidget.content
+    ) {
+      const realCell = notebookTracker.currentWidget.content.widgets.at(index);
+      realCell?.activate();
+      realCell?.ready.then(_ => {
+        if (
+          notebookTracker.currentWidget &&
+          notebookTracker.currentWidget.content
+        ) {
+          const sessionContext = notebookTracker.currentWidget.sessionContext;
+          notebookTracker.currentWidget?.content.deselectAll();
+
+          notebookTracker.currentWidget?.content.select(realCell);
+
+          NotebookActions.runCells(
+            notebookTracker.currentWidget.content,
+            notebookTracker.currentWidget?.content.selectedCells,
+            sessionContext
+          ).then((val: boolean) => {
+            ws.send(
+              JSON.stringify({
+                type: 'setOutput',
+                data: realCell.model.sharedModel.toJSON()
+              })
+            );
+          });
+        }
+      });
+    }
+  }
+
+  export function setNotebook(
+    notebookTracker: INotebookTracker,
+    json: any,
+    test: string = 'test'
+  ) {
+    // json = JSON.parse(json);
+    json.metadata.orig_nbformat = 4;
+    console.log(json);
+    console.log(test);
+    // json = JSON.stringify(json);
+    notebookTracker.currentWidget?.content.model?.fromJSON(json);
   }
 }
