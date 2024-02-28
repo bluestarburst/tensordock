@@ -3,12 +3,17 @@ _commit: v4.2.5
 _src_path: https://github.com/jupyterlab/extension-template
 author_email: hargreaves.bryant@gmail.com
 author_name: Bryant Hargreaves
+data_format: string
+file_extension: ''
 has_binder: true
 has_settings: false
 kind: frontend
-labextension_name: jupyter-tensorboard
+labextension_name: jupyter_tensorboard
+mimetype: ''
+mimetype_name: ''
 project_short_description: A JupyterLab extension.
 python_name: jupyter_tensorboard
 repository: ''
-test: true
+test: false
+viewer_name: ''
 

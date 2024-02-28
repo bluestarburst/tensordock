@@ -23,7 +23,7 @@ import {
  * Initialization data for the jupyter-tensorboard extension.
  */
 const plugin: JupyterFrontEndPlugin<void> = {
-  id: 'jupyter-tensorboard:plugin',
+  id: 'jupyter_tensorboard:plugin',
   description: 'A JupyterLab extension.',
   autoStart: true,
   requires: [INotebookTracker],

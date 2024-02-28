@@ -37,8 +37,8 @@ artifacts = ["jupyter_tensorboard/labextension"]
 exclude = [".github", "binder"]
 
 [tool.hatch.build.targets.wheel.shared-data]
-"jupyter_tensorboard/labextension" = "share/jupyter/labextensions/jupyter-tensorboard"
-"install.json" = "share/jupyter/labextensions/jupyter-tensorboard/install.json"
+"jupyter_tensorboard/labextension" = "share/jupyter/labextensions/jupyter_tensorboard"
+"install.json" = "share/jupyter/labextensions/jupyter_tensorboard/install.json"
 
 [tool.hatch.build.hooks.version]
 path = "jupyter_tensorboard/_version.py"
