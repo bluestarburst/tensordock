@@ -1,6 +1,6 @@
 # Jupyter_Tensorboard
 
-[![Github Actions Status](/workflows/Build/badge.svg)](/actions/workflows/build.yml)[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh//main?urlpath=lab)
+[![Github Actions Status](/workflows/Build/badge.svg)](/actions/workflows/build.yml)[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/BlueStarBurst/tensorboard-ext/HEAD)
 A JupyterLab extension.
 
 ## Requirements
