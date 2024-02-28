@@ -2,9 +2,9 @@
 # this environment may also be used locally on Linux/MacOS/Windows, e.g.
 #
 #   conda env update --file binder/environment.yml
-#   conda activate Jupyter-Tensorboard-demo
+#   conda activate jupyter-tensorboard-demo
 #
-name: Jupyter-Tensorboard-demo
+name: jupyter-tensorboard-demo
 
 channels:
   - conda-forge

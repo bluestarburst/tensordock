@@ -1,7 +1,7 @@
 {
-  "name": "Jupyter-Tensorboard-ui-tests",
+  "name": "jupyter-tensorboard-ui-tests",
   "version": "1.0.0",
-  "description": "JupyterLab Jupyter-Tensorboard Integration Tests",
+  "description": "JupyterLab jupyter-tensorboard Integration Tests",
   "private": true,
   "scripts": {
     "start": "jupyter lab --config jupyter_server_test_config.py",

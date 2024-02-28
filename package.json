@@ -1,5 +1,5 @@
 {
-    "name": "Jupyter-Tensorboard",
+    "name": "jupyter-tensorboard",
     "version": "0.1.0",
     "description": "A JupyterLab extension.",
     "keywords": [

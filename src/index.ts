@@ -20,10 +20,10 @@ import {
 } from '@jupyterlab/notebook';
 
 /**
- * Initialization data for the Jupyter-Tensorboard extension.
+ * Initialization data for the jupyter-tensorboard extension.
  */
 const plugin: JupyterFrontEndPlugin<void> = {
-  id: 'Jupyter-Tensorboard:plugin',
+  id: 'jupyter-tensorboard:plugin',
   description: 'A JupyterLab extension.',
   autoStart: true,
   requires: [INotebookTracker],

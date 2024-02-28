@@ -17,7 +17,7 @@ test('should emit an activation console message', async ({ page }) => {
 
   expect(
     logs.filter(
-      s => s === 'JupyterLab extension Jupyter-Tensorboard is activated!'
+      s => s === 'JupyterLab extension jupyter-tensorboard is activated!'
     )
   ).toHaveLength(1);
 });

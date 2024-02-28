@@ -3779,9 +3779,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"Jupyter-Tensorboard@workspace:.":
+"jupyter-tensorboard@workspace:.":
   version: 0.0.0-use.local
-  resolution: "Jupyter-Tensorboard@workspace:."
+  resolution: "jupyter-tensorboard@workspace:."
   dependencies:
     "@jupyterlab/application": ^4.1.1
     "@jupyterlab/builder": ^4.0.0
