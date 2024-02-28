@@ -50,13 +50,13 @@ jobs:
 
         pip install build
         python -m build
-        pip uninstall -y "Jupyter_Tensorboard" jupyterlab
+        pip uninstall -y "jupyter_tensorboard" jupyterlab
 
     - name: Upload extension packages
       uses: actions/upload-artifact@v3
       with:
         name: extension-artifacts
-        path: dist/Jupyter_Tensorboard*
+        path: dist/jupyter_tensorboard*
         if-no-files-found: error
 
   test_isolated:
@@ -79,7 +79,7 @@ jobs:
         sudo rm -rf $(which node)
         sudo rm -rf $(which node)
 
-        pip install "jupyterlab>=4.0.0,<5" Jupyter_Tensorboard*.whl
+        pip install "jupyterlab>=4.0.0,<5" jupyter_tensorboard*.whl
 
 
         jupyter labextension list
@@ -109,7 +109,7 @@ jobs:
     - name: Install the extension
       run: |
         set -eux
-        python -m pip install "jupyterlab>=4.0.0,<5" Jupyter_Tensorboard*.whl
+        python -m pip install "jupyterlab>=4.0.0,<5" jupyter_tensorboard*.whl
 
     - name: Install dependencies
       working-directory: ui-tests
@@ -138,7 +138,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v3
       with:
-        name: Jupyter_Tensorboard-playwright-tests
+        name: jupyter_tensorboard-playwright-tests
         path: |
           ui-tests/test-results
           ui-tests/playwright-report

@@ -26,5 +26,5 @@ jobs:
       - name: Upload Distributions
         uses: actions/upload-artifact@v3
         with:
-          name: Jupyter_Tensorboard-releaser-dist-${{ github.run_number }}
+          name: jupyter_tensorboard-releaser-dist-${{ github.run_number }}
           path: .jupyter_releaser_checkout/dist
