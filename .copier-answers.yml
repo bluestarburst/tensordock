@@ -8,7 +8,7 @@ has_settings: false
 kind: frontend
 labextension_name: Jupyter-Tensorboard
 project_short_description: A JupyterLab extension.
-python_name: Jupyter_Tensorboard
+python_name: jupyter_tensorboard
 repository: ''
 test: true
 

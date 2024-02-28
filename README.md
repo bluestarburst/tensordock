@@ -1,4 +1,4 @@
-# Jupyter_Tensorboard
+# jupyter_tensorboard
 
 [![Github Actions Status](/workflows/Build/badge.svg)](/actions/workflows/build.yml)[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/BlueStarBurst/tensorboard-ext/HEAD)
 A JupyterLab extension.
@@ -12,7 +12,7 @@ A JupyterLab extension.
 To install the extension, execute:
 
 ```bash
-pip install Jupyter_Tensorboard
+pip install jupyter_tensorboard
 ```
 
 ## Uninstall
@@ -20,7 +20,7 @@ pip install Jupyter_Tensorboard
 To remove the extension, execute:
 
 ```bash
-pip uninstall Jupyter_Tensorboard
+pip uninstall jupyter_tensorboard
 ```
 
 ## Contributing
@@ -35,7 +35,7 @@ The `jlpm` command is JupyterLab's pinned version of
 
 ```bash
 # Clone the repo to your local environment
-# Change directory to the Jupyter_Tensorboard directory
+# Change directory to the jupyter_tensorboard directory
 # Install package in development mode
 pip install -e "."
 # Link your development version of the extension with JupyterLab
@@ -64,7 +64,7 @@ jupyter lab build --minimize=False
 ### Development uninstall
 
 ```bash
-pip uninstall Jupyter_Tensorboard
+pip uninstall jupyter_tensorboard
 ```
 
 In development mode, you will also need to remove the symlink created by `jupyter labextension develop`
