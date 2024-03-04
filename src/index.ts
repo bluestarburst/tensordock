@@ -58,7 +58,38 @@ export class WidgetExtension
  */
 function activate(app: JupyterFrontEnd, notebookTracker: INotebookTracker) {
   // Nothing is needed
+  console.log('JupyterLab extension jupyter-tensorboard is activated!');
 
+  startWS(notebookTracker);
+
+  // const ws = new WebSocket('ws://localhost:3000');
+  // ws.onopen = () => {
+  //   ws.send(JSON.stringify({ type: 'jupyter', data: '' }));
+  //   clearInterval(interval);
+  // };
+  // ws.onmessage = event => {
+  //   console.log('Message from server ', event.data);
+  //   const data = JSON.parse(event.data);
+  //   switch (data.type) {
+  //     case 'runCell':
+  //       // run cell at index
+  //       console.log('Running cell ' + data.data);
+  //       // Private.runAll(notebookTracker);
+  //       Private.runCell(notebookTracker, data.data, ws);
+  //       break;
+  //     case 'setNotebook':
+  //       Private.setNotebook(notebookTracker, JSON.parse(data.data));
+  //       break;
+  //     default:
+  //       console.log('Unknown message');
+  //   }
+  // };
+  // }, 1000);
+
+  app.docRegistry.addWidgetExtension('Notebook', new WidgetExtension());
+}
+
+function startWS(notebookTracker: INotebookTracker) {
   const ws = new WebSocket('ws://localhost:3000');
   ws.onopen = () => {
     ws.send(JSON.stringify({ type: 'jupyter', data: '' }));
@@ -80,9 +111,17 @@ function activate(app: JupyterFrontEnd, notebookTracker: INotebookTracker) {
         console.log('Unknown message');
     }
   };
+  ws.onclose = () => {
+    console.log('WebSocket closed');
+    ws.close();
+    setTimeout(() => startWS(notebookTracker), 1000);
+  }
+  ws.onerror = () => {
+    console.log('WebSocket error');
+  }
 
-  app.docRegistry.addWidgetExtension('Notebook', new WidgetExtension());
 }
+
 
 // /**
 //  * Export the plugin as default.
