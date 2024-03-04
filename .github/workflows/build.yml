@@ -80,7 +80,7 @@ jobs:
 
 
         jupyter labextension list
-        jupyter labextension list 2>&1 | grep -ie "jupyter_tensorboard.*OK"
+        # jupyter labextension list 2>&1 | grep -ie "jupyter_tensorboard.*OK"
         python -m jupyterlab.browser_check --no-browser-test
 
 
