@@ -115,13 +115,11 @@ function startWS(notebookTracker: INotebookTracker) {
     console.log('WebSocket closed');
     ws.close();
     setTimeout(() => startWS(notebookTracker), 1000);
-  }
+  };
   ws.onerror = () => {
     console.log('WebSocket error');
-  }
-
+  };
 }
-
 
 // /**
 //  * Export the plugin as default.
