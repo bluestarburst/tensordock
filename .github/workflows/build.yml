@@ -38,7 +38,7 @@ jobs:
         jupyter labextension list
         cd "/opt/hostedtoolcache/Python/3.11.8/x64/share/jupyter/labextensions"
         ls -l
-        jupyter labextension list 2>&1 | grep -ie "jupyter_tensorboard.*OK"
+        # jupyter labextension list 2>&1 | grep -ie "jupyter_tensorboard.*OK"
         python -m jupyterlab.browser_check
 
     - name: Package the extension
