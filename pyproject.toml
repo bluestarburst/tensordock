@@ -29,11 +29,8 @@ dynamic = ["version", "description", "authors", "urls", "keywords"]
 [tool.hatch.version]
 source = "nodejs"
 
-[tool.hatch.metadata]
-allow-direct-references = true
-
 [tool.hatch.metadata.hooks.nodejs]
-fields = ["description", "authors", "urls"]
+fields = ["description", "authors", "urls", "keywords"]
 
 [tool.hatch.build.targets.sdist]
 artifacts = ["jupyter_tensorboard/labextension"]

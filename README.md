@@ -1,6 +1,9 @@
 # jupyter_tensorboard
 
-[![Github Actions Status](https://github.com/BlueStarBurst/tensorboard-ext/workflows/Build/badge.svg)](https://github.com/BlueStarBurst/tensorboard-ext/actions/workflows/build.yml)[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/BlueStarBurst/tensorboard-ext/HEAD)
+[![Github Actions Status](https://github.com/BlueStarBurst/tensorboard-ext/workflows/Build/badge.svg)](https://github.com/BlueStarBurst/tensorboard-ext/actions/workflows/build.yml)
+[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/BlueStarBurst/tensorboard-ext/main?urlpath=lab)
+
+
 A JupyterLab extension.
 
 ## Requirements
