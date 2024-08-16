@@ -62,30 +62,6 @@ function activate(app: JupyterFrontEnd, notebookTracker: INotebookTracker) {
 
   startWS(notebookTracker);
 
-  // const ws = new WebSocket('ws://localhost:3000');
-  // ws.onopen = () => {
-  //   ws.send(JSON.stringify({ type: 'jupyter', data: '' }));
-  //   clearInterval(interval);
-  // };
-  // ws.onmessage = event => {
-  //   console.log('Message from server ', event.data);
-  //   const data = JSON.parse(event.data);
-  //   switch (data.type) {
-  //     case 'runCell':
-  //       // run cell at index
-  //       console.log('Running cell ' + data.data);
-  //       // Private.runAll(notebookTracker);
-  //       Private.runCell(notebookTracker, data.data, ws);
-  //       break;
-  //     case 'setNotebook':
-  //       Private.setNotebook(notebookTracker, JSON.parse(data.data));
-  //       break;
-  //     default:
-  //       console.log('Unknown message');
-  //   }
-  // };
-  // }, 1000);
-
   app.docRegistry.addWidgetExtension('Notebook', new WidgetExtension() as any);
 }
 
