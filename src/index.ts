@@ -26,7 +26,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
   id: 'jupyter_tensorboard:plugin',
   description: 'A JupyterLab extension.',
   autoStart: true,
-  requires: [INotebookTracker],
+  requires: [INotebookTracker as any],
   activate: activate
 };
 
@@ -46,7 +46,7 @@ export class WidgetExtension
     const widget = new Widget({ node: Private.createNode() });
     widget.addClass('jp-myextension-myheader');
 
-    panel.contentHeader.insertWidget(0, widget);
+    panel.contentHeader.insertWidget(0, widget as any);
     return new DisposableDelegate(() => {
       widget.dispose();
     });
@@ -86,7 +86,7 @@ function activate(app: JupyterFrontEnd, notebookTracker: INotebookTracker) {
   // };
   // }, 1000);
 
-  app.docRegistry.addWidgetExtension('Notebook', new WidgetExtension());
+  app.docRegistry.addWidgetExtension('Notebook', new WidgetExtension() as any);
 }
 
 function startWS(notebookTracker: INotebookTracker) {
