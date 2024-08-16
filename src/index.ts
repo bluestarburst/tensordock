@@ -42,6 +42,8 @@ export class WidgetExtension
     const widget = new Widget({ node: Private.createNode() });
     widget.addClass('jp-myextension-myheader');
 
+    console.log('Creating new widget extension');
+
     panel.contentHeader.insertWidget(0, widget as any);
     return new DisposableDelegate(() => {
       widget.dispose();
