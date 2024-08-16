@@ -1,14 +1,14 @@
 # Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
 _commit: v4.3.5
 _src_path: https://github.com/jupyterlab/extension-template
-author_email: hargreaves.bryant@gmail.com
-author_name: inkobako
+author_email: ''
+author_name: bluestarburst
 has_binder: true
 has_settings: false
 kind: frontend
-labextension_name: tensorboard
+labextension_name: tensordock
 project_short_description: A JupyterLab extension.
-python_name: tensorboard
-repository: https://github.com/BlueStarBurst/tensorboard-ext
+python_name: tensordock
+repository: ''
 test: true
 

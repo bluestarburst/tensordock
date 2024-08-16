@@ -1,7 +1,7 @@
-# tensorboard
+# tensordock
 
-[![Github Actions Status](https://github.com/BlueStarBurst/tensorboard-ext/workflows/Build/badge.svg)](https://github.com/BlueStarBurst/tensorboard-ext/actions/workflows/build.yml)
-[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/BlueStarBurst/tensorboard-ext/main?urlpath=lab)
+[![Github Actions Status](/workflows/Build/badge.svg)](/actions/workflows/build.yml)
+[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh//main?urlpath=lab)
 
 
 A JupyterLab extension.
@@ -15,7 +15,7 @@ A JupyterLab extension.
 To install the extension, execute:
 
 ```bash
-pip install tensorboard
+pip install tensordock
 ```
 
 ## Uninstall
@@ -23,7 +23,7 @@ pip install tensorboard
 To remove the extension, execute:
 
 ```bash
-pip uninstall tensorboard
+pip uninstall tensordock
 ```
 
 ## Contributing
@@ -38,7 +38,7 @@ The `jlpm` command is JupyterLab's pinned version of
 
 ```bash
 # Clone the repo to your local environment
-# Change directory to the tensorboard directory
+# Change directory to the tensordock directory
 # Install package in development mode
 pip install -e "."
 # Link your development version of the extension with JupyterLab
@@ -67,12 +67,12 @@ jupyter lab build --minimize=False
 ### Development uninstall
 
 ```bash
-pip uninstall tensorboard
+pip uninstall tensordock
 ```
 
 In development mode, you will also need to remove the symlink created by `jupyter labextension develop`
 command. To find its location, you can run `jupyter labextension list` to figure out where the `labextensions`
-folder is located. Then you can remove the symlink named `tensorboard` within that folder.
+folder is located. Then you can remove the symlink named `tensordock` within that folder.
 
 ### Testing the extension
 

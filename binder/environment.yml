@@ -1,10 +1,10 @@
-# a mybinder.org-ready environment for demoing tensorboard
+# a mybinder.org-ready environment for demoing tensordock
 # this environment may also be used locally on Linux/MacOS/Windows, e.g.
 #
 #   conda env update --file binder/environment.yml
-#   conda activate tensorboard-demo
+#   conda activate tensordock-demo
 #
-name: tensorboard-demo
+name: tensordock-demo
 
 channels:
   - conda-forge

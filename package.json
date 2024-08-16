@@ -1,5 +1,5 @@
 {
-    "name": "tensorboard",
+    "name": "tensordock",
     "version": "0.1.0",
     "description": "A JupyterLab extension.",
     "keywords": [
@@ -7,15 +7,12 @@
         "jupyterlab",
         "jupyterlab-extension"
     ],
-    "homepage": "https://github.com/BlueStarBurst/tensorboard-ext",
+    "homepage": "",
     "bugs": {
-        "url": "https://github.com/BlueStarBurst/tensorboard-ext/issues"
+        "url": "/issues"
     },
     "license": "BSD-3-Clause",
-    "author": {
-        "name": "inkobako",
-        "email": "hargreaves.bryant@gmail.com"
-    },
+    "author": "bluestarburst",
     "files": [
         "lib/**/*.{d.ts,eot,gif,html,jpg,js,js.map,json,png,svg,woff2,ttf}",
         "style/**/*.{css,js,eot,gif,html,jpg,json,png,svg,woff2,ttf}",
@@ -26,7 +23,7 @@
     "style": "style/index.css",
     "repository": {
         "type": "git",
-        "url": "https://github.com/BlueStarBurst/tensorboard-ext.git"
+        "url": ".git"
     },
     "scripts": {
         "build": "jlpm build:lib && jlpm build:labextension:dev",
@@ -38,7 +35,7 @@
         "clean": "jlpm clean:lib",
         "clean:lib": "rimraf lib tsconfig.tsbuildinfo",
         "clean:lintcache": "rimraf .eslintcache .stylelintcache",
-        "clean:labextension": "rimraf tensorboard/labextension tensorboard/_version.py",
+        "clean:labextension": "rimraf tensordock/labextension tensordock/_version.py",
         "clean:all": "jlpm clean:lib && jlpm clean:labextension && jlpm clean:lintcache",
         "eslint": "jlpm eslint:check --fix",
         "eslint:check": "eslint . --cache --ext .ts,.tsx",
@@ -58,10 +55,7 @@
     "dependencies": {
         "@jupyterlab/application": "^4.2.4",
         "@jupyterlab/apputils": "^4.3.4",
-        "@jupyterlab/notebook": "^4.1.2",
-        "@lumino/widgets": "^2.5.0",
-        "@types/create-react-class": "^15.6.8",
-        "@types/prop-types": "^15.7.12"
+        "@lumino/widgets": "^2.5.0"
     },
     "devDependencies": {
         "@jupyterlab/builder": "^4.0.0",
@@ -100,7 +94,7 @@
     },
     "jupyterlab": {
         "extension": true,
-        "outputDir": "tensorboard/labextension"
+        "outputDir": "tensordock/labextension"
     },
     "eslintIgnore": [
         "node_modules",
