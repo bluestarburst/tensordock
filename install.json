@@ -1,5 +1,5 @@
 {
   "packageManager": "python",
-  "packageName": "jupyter_tensorboard",
-  "uninstallInstructions": "Use your Python package manager (pip, conda, etc.) to uninstall the package jupyter_tensorboard"
+  "packageName": "tensorboard",
+  "uninstallInstructions": "Use your Python package manager (pip, conda, etc.) to uninstall the package tensorboard"
 }

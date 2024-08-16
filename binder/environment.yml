@@ -1,10 +1,10 @@
-# a mybinder.org-ready environment for demoing jupyter_tensorboard
+# a mybinder.org-ready environment for demoing tensorboard
 # this environment may also be used locally on Linux/MacOS/Windows, e.g.
 #
 #   conda env update --file binder/environment.yml
-#   conda activate jupyter-tensorboard-demo
+#   conda activate tensorboard-demo
 #
-name: jupyter-tensorboard-demo
+name: tensorboard-demo
 
 channels:
   - conda-forge

@@ -3,7 +3,7 @@ requires = ["hatchling>=1.5.0", "jupyterlab>=4.0.0,<5", "hatch-nodejs-version>=0
 build-backend = "hatchling.build"
 
 [project]
-name = "jupyter_tensorboard"
+name = "tensorboard"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.8"
@@ -33,24 +33,24 @@ source = "nodejs"
 fields = ["description", "authors", "urls", "keywords"]
 
 [tool.hatch.build.targets.sdist]
-artifacts = ["jupyter_tensorboard/labextension"]
+artifacts = ["tensorboard/labextension"]
 exclude = [".github", "binder"]
 
 [tool.hatch.build.targets.wheel.shared-data]
-"jupyter_tensorboard/labextension" = "share/jupyter/labextensions/jupyter_tensorboard"
-"install.json" = "share/jupyter/labextensions/jupyter_tensorboard/install.json"
+"tensorboard/labextension" = "share/jupyter/labextensions/tensorboard"
+"install.json" = "share/jupyter/labextensions/tensorboard/install.json"
 
 [tool.hatch.build.hooks.version]
-path = "jupyter_tensorboard/_version.py"
+path = "tensorboard/_version.py"
 
 [tool.hatch.build.hooks.jupyter-builder]
 dependencies = ["hatch-jupyter-builder>=0.5"]
 build-function = "hatch_jupyter_builder.npm_builder"
 ensured-targets = [
-    "jupyter_tensorboard/labextension/static/style.js",
-    "jupyter_tensorboard/labextension/package.json",
+    "tensorboard/labextension/static/style.js",
+    "tensorboard/labextension/package.json",
 ]
-skip-if-exists = ["jupyter_tensorboard/labextension/static/style.js"]
+skip-if-exists = ["tensorboard/labextension/static/style.js"]
 
 [tool.hatch.build.hooks.jupyter-builder.build-kwargs]
 build_cmd = "build:prod"
@@ -60,7 +60,7 @@ npm = ["jlpm"]
 build_cmd = "install:extension"
 npm = ["jlpm"]
 source_dir = "src"
-build_dir = "jupyter_tensorboard/labextension"
+build_dir = "tensorboard/labextension"
 
 [tool.jupyter-releaser.options]
 version_cmd = "hatch version"

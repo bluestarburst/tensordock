@@ -2,13 +2,13 @@
 _commit: v4.3.5
 _src_path: https://github.com/jupyterlab/extension-template
 author_email: hargreaves.bryant@gmail.com
-author_name: Bryant Hargreaves
+author_name: inkobako
 has_binder: true
-has_settings: true
+has_settings: false
 kind: frontend
-labextension_name: jupyter_tensorboard
+labextension_name: tensorboard
 project_short_description: A JupyterLab extension.
-python_name: jupyter_tensorboard
+python_name: tensorboard
 repository: https://github.com/BlueStarBurst/tensorboard-ext
-test: false
+test: true
 
