@@ -1,6 +1,7 @@
 {
     "name": "tensordock",
     "version": "0.1.0",
+    "type": "module",
     "description": "A JupyterLab extension.",
     "keywords": [
         "jupyter",
@@ -50,12 +51,17 @@
         "test": "jest --coverage",
         "watch": "run-p watch:src watch:labextension",
         "watch:src": "tsc -w --sourceMap",
-        "watch:labextension": "jupyter labextension watch ."
+        "watch:labextension": "jupyter labextension watch .",
+        "server": "tsx watch src/server/server.ts"
     },
     "dependencies": {
         "@jupyterlab/application": "^4.2.4",
         "@jupyterlab/apputils": "^4.3.4",
-        "@lumino/widgets": "^2.5.0"
+        "@lumino/widgets": "^2.5.0",
+        "@types/ws": "^8.5.12",
+        "bufferutil": "^4.0.8",
+        "tsx": "^4.17.0",
+        "ws": "^8.18.0"
     },
     "devDependencies": {
         "@jupyterlab/builder": "^4.0.0",

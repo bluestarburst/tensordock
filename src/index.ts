@@ -13,8 +13,10 @@ import {
   NotebookPanel,
   INotebookModel,
   INotebookTracker,
-  NotebookActions,
+  NotebookActions
 } from '@jupyterlab/notebook';
+
+// import WebSocket, { WebSocketServer } from 'ws';
 
 /**
  * Initialization data for the jupyter-tensorboard extension.
@@ -31,7 +33,8 @@ const plugin: JupyterFrontEndPlugin<void> = {
  * A notebook widget extension that adds a widget in the notebook header (widget below the toolbar).
 //  */
 export class WidgetExtension
-  implements DocumentRegistry.IWidgetExtension<NotebookPanel, INotebookModel> {
+  implements DocumentRegistry.IWidgetExtension<NotebookPanel, INotebookModel>
+{
   /**
    * Create a new extension object.
    */
@@ -64,13 +67,52 @@ function activate(app: JupyterFrontEnd, notebookTracker: INotebookTracker) {
 }
 
 function startWS(notebookTracker: INotebookTracker) {
-  const ws = new WebSocket('ws://localhost:3000');
+  // const wss = new WebSocketServer({ port: 5000 });
+
+  // wss.on('connection', ws => {
+  //   console.log('WebSocket opened');
+  //   ws.send(JSON.stringify({ type: 'jupyter', data: '' }));
+
+  //   ws.on('message', message => {
+  //     console.log('Message from server ', message);
+  //     const data = JSON.parse(message.toString());
+  //     switch (data.type) {
+  //       case 'runCell':
+  //         // run cell at index
+  //         console.log('Running cell ' + data.data);
+  //         // Private.runAll(notebookTracker);
+  //         Private.runCell(notebookTracker, data.data, ws);
+  //         break;
+  //       case 'setNotebook':
+  //         Private.setNotebook(notebookTracker, data.data, 'test');
+  //         break;
+  //       default:
+  //         console.log('Unknown message');
+  //     }
+  //   });
+
+  //   ws.on('close', () => {
+  //     console.log('WebSocket closed');
+  //     ws.close();
+  //     setTimeout(() => startWS(notebookTracker), 1000);
+  //   });
+
+  //   ws.on('error', e => {
+  //     console.log('WebSocket error');
+  //     console.log(e);
+  //   });
+  // });
+
+  // create client websocket
+  const ws = new WebSocket('ws://localhost:5000');
   ws.onopen = () => {
+    console.log('WebSocket opened');
     ws.send(JSON.stringify({ type: 'jupyter', data: '' }));
   };
-  ws.onmessage = event => {
-    console.log('Message from server ', event.data);
-    const data = JSON.parse(event.data);
+
+  ws.onmessage = message => {
+    console.log('Message from server ', message);
+    const data = JSON.parse(message.data.toString());
     switch (data.type) {
       case 'runCell':
         // run cell at index
@@ -79,19 +121,22 @@ function startWS(notebookTracker: INotebookTracker) {
         Private.runCell(notebookTracker, data.data, ws);
         break;
       case 'setNotebook':
-        Private.setNotebook(notebookTracker, JSON.parse(data.data));
+        Private.setNotebook(notebookTracker, data.data, 'test');
         break;
       default:
         console.log('Unknown message');
     }
   };
+
   ws.onclose = () => {
     console.log('WebSocket closed');
     ws.close();
     setTimeout(() => startWS(notebookTracker), 1000);
   };
-  ws.onerror = () => {
+
+  ws.onerror = e => {
     console.log('WebSocket error');
+    console.log(e);
   };
 }
 
