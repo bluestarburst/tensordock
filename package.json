@@ -58,7 +58,9 @@
         "@jupyterlab/application": "^4.2.4",
         "@jupyterlab/apputils": "^4.3.4",
         "@jupyterlab/notebook": "^4.1.2",
-        "@lumino/widgets": "^2.5.0"
+        "@lumino/widgets": "^2.5.0",
+        "@types/create-react-class": "^15.6.8",
+        "@types/prop-types": "^15.7.12"
     },
     "devDependencies": {
         "@jupyterlab/builder": "^4.0.0",
