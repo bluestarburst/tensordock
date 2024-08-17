@@ -16,6 +16,8 @@ import {
   NotebookActions
 } from '@jupyterlab/notebook';
 
+import { ContentsManager } from '@jupyterlab/services';
+
 // import WebSocket, { WebSocketServer } from 'ws';
 
 /**
@@ -54,55 +56,58 @@ export class WidgetExtension
   }
 }
 
+async function setup_notebook(app: JupyterFrontEnd) {
+  const manager = new ContentsManager();
+  // Save the notebook
+  const notebookName = 'tensorboard.ipynb';
+
+  try {
+    await app.commands.execute('docmanager:open', {
+      path: notebookName,
+      factory: 'Notebook'
+    });
+  } catch (e) {
+    await manager.save(notebookName, {
+      type: 'notebook',
+      content: {
+        cells: [],
+        metadata: {
+          kernelspec: {
+            display_name: 'Python 3'
+          },
+          language_info: {
+            name: 'python',
+            version: '3.8.5'
+          }
+        },
+        nbformat: 4,
+        nbformat_minor: 2
+      }
+    });
+
+    await app.commands.execute('docmanager:open', {
+      path: notebookName,
+      factory: 'Notebook'
+    });
+  }
+}
+
 /**
  * Activate the extension.
  */
 function activate(app: JupyterFrontEnd, notebookTracker: INotebookTracker) {
+  // Save the notebook
+  setup_notebook(app);
+
   // Nothing is needed
   console.log('JupyterLab extension jupyter-tensorboard is activated!');
 
-  startWS(notebookTracker);
+  startWS(app, notebookTracker);
 
   app.docRegistry.addWidgetExtension('Notebook', new WidgetExtension() as any);
 }
 
-function startWS(notebookTracker: INotebookTracker) {
-  // const wss = new WebSocketServer({ port: 5000 });
-
-  // wss.on('connection', ws => {
-  //   console.log('WebSocket opened');
-  //   ws.send(JSON.stringify({ type: 'jupyter', data: '' }));
-
-  //   ws.on('message', message => {
-  //     console.log('Message from server ', message);
-  //     const data = JSON.parse(message.toString());
-  //     switch (data.type) {
-  //       case 'runCell':
-  //         // run cell at index
-  //         console.log('Running cell ' + data.data);
-  //         // Private.runAll(notebookTracker);
-  //         Private.runCell(notebookTracker, data.data, ws);
-  //         break;
-  //       case 'setNotebook':
-  //         Private.setNotebook(notebookTracker, data.data, 'test');
-  //         break;
-  //       default:
-  //         console.log('Unknown message');
-  //     }
-  //   });
-
-  //   ws.on('close', () => {
-  //     console.log('WebSocket closed');
-  //     ws.close();
-  //     setTimeout(() => startWS(notebookTracker), 1000);
-  //   });
-
-  //   ws.on('error', e => {
-  //     console.log('WebSocket error');
-  //     console.log(e);
-  //   });
-  // });
-
+function startWS(app: JupyterFrontEnd, notebookTracker: INotebookTracker) {
   // create client websocket
   const ws = new WebSocket('ws://localhost:5000');
   ws.onopen = () => {
@@ -121,7 +126,7 @@ function startWS(notebookTracker: INotebookTracker) {
         Private.runCell(notebookTracker, data.data, ws);
         break;
       case 'setNotebook':
-        Private.setNotebook(notebookTracker, data.data, 'test');
+        Private.setNotebook(notebookTracker, app, data.data, 'test');
         break;
       default:
         console.log('Unknown message');
@@ -131,7 +136,7 @@ function startWS(notebookTracker: INotebookTracker) {
   ws.onclose = () => {
     console.log('WebSocket closed');
     ws.close();
-    setTimeout(() => startWS(notebookTracker), 1000);
+    setTimeout(() => startWS(app, notebookTracker), 1000);
   };
 
   ws.onerror = e => {
@@ -209,16 +214,66 @@ namespace Private {
     }
   }
 
-  export function setNotebook(
+  type Notebook = {
+    metadata: {
+      kernelspec: {
+        display_name: string;
+        language: string;
+        name: string;
+      };
+      language_info: {
+        codemirror_mode: {
+          name: string;
+          version: number;
+        };
+        file_extension: string;
+        mimetype: string;
+        name: string;
+        nbconvert_exporter: string;
+        pygments_lexer: string;
+        version: string;
+      };
+      orig_nbformat: number;
+    };
+    cells: any[];
+    colab: {
+      provenance: [];
+    };
+    nbformat: number;
+    nbformat_minor: number;
+  };
+
+  export async function setNotebook(
     notebookTracker: INotebookTracker,
-    json: any,
+    app: JupyterFrontEnd,
+    json: string,
     test: string = 'test'
   ) {
-    // json = JSON.parse(json);
-    json.metadata.orig_nbformat = 4;
-    console.log(json);
-    console.log(test);
-    // json = JSON.stringify(json);
-    notebookTracker.currentWidget?.content.model?.fromJSON(json);
+    const notebook = JSON.parse(json) as Notebook;
+    notebook.metadata.orig_nbformat = 4;
+    // console.log('Setting notebook', notebook, notebook.metadata.orig_nbformat);
+    // // const newJson = JSON.stringify(notebook);
+    // // console.log('Setting notebook', newJson);
+    // notebookTracker.currentWidget?.content.model?.fromJSON(notebook);
+
+    // create new notebook
+    const manager = new ContentsManager();
+
+    const notebookName = 'tensorboard.ipynb';
+
+    // Open the notebook in JupyterLab
+    const widget = await app.commands.execute('docmanager:open', {
+      path: notebookName,
+      factory: 'Notebook'
+    });
+
+    // set the content of the notebook to the new notebook
+    notebookTracker.currentWidget?.content.model?.fromJSON(notebook);
+
+    await app.commands.execute('docmanager:save', {});
+
+    if (widget) {
+      console.log('Notebook created and opened successfully!');
+    }
   }
 }
