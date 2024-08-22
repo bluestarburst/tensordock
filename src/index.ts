@@ -185,6 +185,8 @@ namespace Private {
     index: number,
     ws: WebSocket
   ) {
+    console.log('Running cell ' + index);
+
     if (
       notebookTracker.currentWidget &&
       notebookTracker.currentWidget.content
@@ -197,13 +199,18 @@ namespace Private {
           notebookTracker.currentWidget.content
         ) {
           const sessionContext = notebookTracker.currentWidget.sessionContext;
+          notebookTracker.currentWidget?.content.scrollToCell(realCell);
           notebookTracker.currentWidget?.content.deselectAll();
-
           notebookTracker.currentWidget?.content.select(realCell);
+
+          console.log(
+            'Running cell',
+            notebookTracker.currentWidget?.content.selectedCells
+          );
 
           NotebookActions.runCells(
             notebookTracker.currentWidget.content,
-            notebookTracker.currentWidget?.content.selectedCells,
+            [realCell],
             sessionContext
           ).then((val: boolean) => {
             ws.send(

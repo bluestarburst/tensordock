@@ -3,6 +3,8 @@ import { WebSocket, WebSocketServer } from 'ws';
 const clients: WebSocket[] = [];
 const jupyter: WebSocket[] = [];
 
+console.log('Starting server');
+
 const wss = new WebSocketServer({ port: 5000 });
 
 wss.on('connection', (ws: WebSocket) => {
