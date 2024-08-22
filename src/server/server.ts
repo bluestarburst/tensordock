@@ -43,9 +43,10 @@ wss.on('connection', (ws: WebSocket) => {
           jup.send(JSON.stringify({ type: 'runCell', data: data.data }));
         }
         break;
+      case 'setPartial':
       case 'setOutput':
         for (const c of clients) {
-          c.send(JSON.stringify({ type: 'setOutput', data: data.data }));
+          c.send(JSON.stringify({ type: data.type, data: data.data }));
         }
         break;
       default:

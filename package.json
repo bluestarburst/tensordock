@@ -52,7 +52,9 @@
         "watch": "run-p watch:src watch:labextension",
         "watch:src": "tsc -w --sourceMap",
         "watch:labextension": "jupyter labextension watch .",
-        "server": "tsx watch src/server/server.ts"
+        "server": "run-p watch:src watch:labextension server:websocket server:lab",
+        "server:websocket": "tsx watch src/server/server.ts",
+        "server:lab": "jupyter lab"
     },
     "dependencies": {
         "@jupyterlab/application": "^4.2.4",

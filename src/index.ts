@@ -208,11 +208,31 @@ namespace Private {
             notebookTracker.currentWidget?.content.selectedCells
           );
 
+          // get cell changes whenever it updates
+
+          let oldOutput = realCell.model.sharedModel.toJSON().outputs;
+
+          const checkOutputInterval = setInterval(() => {
+            if (
+              realCell.model.sharedModel.cell_type === 'code' &&
+              oldOutput !== realCell.model.sharedModel.toJSON().outputs
+            ) {
+              ws.send(
+                JSON.stringify({
+                  type: 'setPartial',
+                  data: realCell.model.sharedModel.toJSON()
+                })
+              );
+              oldOutput = realCell.model.sharedModel.toJSON().outputs;
+            }
+          }, 500);
+
           NotebookActions.runCells(
             notebookTracker.currentWidget.content,
             [realCell],
             sessionContext
           ).then((val: boolean) => {
+            clearInterval(checkOutputInterval);
             ws.send(
               JSON.stringify({
                 type: 'setOutput',
