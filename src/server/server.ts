@@ -17,7 +17,7 @@ wss.on('connection', (ws: WebSocket) => {
     console.log(data);
     switch (data.type) {
       case 'client':
-        console.log('Running cell ' + data.data);
+        console.log('Setting client');
         clients.push(ws);
         break;
       case 'jupyter':
@@ -29,9 +29,21 @@ wss.on('connection', (ws: WebSocket) => {
           jup.send(JSON.stringify({ type: 'setNotebook', data: data.data }));
         }
         break;
+      case 'restartNotebook':
+        for (const jup of jupyter) {
+          jup.send(
+            JSON.stringify({ type: 'restartNotebook', data: data.data })
+          );
+        }
+        break;
       case 'runCell':
         for (const jup of jupyter) {
           jup.send(JSON.stringify({ type: 'runCell', data: data.data }));
+        }
+        break;
+      case 'setOutput':
+        for (const c of clients) {
+          c.send(JSON.stringify({ type: 'setOutput', data: data.data }));
         }
         break;
       default:
@@ -41,6 +53,11 @@ wss.on('connection', (ws: WebSocket) => {
 
   ws.on('close', () => {
     console.log('WebSocket closed');
+    if (clients.includes(ws)) {
+      clients.splice(clients.indexOf(ws), 1);
+    } else if (jupyter.includes(ws)) {
+      jupyter.splice(jupyter.indexOf(ws), 1);
+    }
     ws.close();
   });
 

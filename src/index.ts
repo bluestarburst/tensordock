@@ -128,6 +128,10 @@ function startWS(app: JupyterFrontEnd, notebookTracker: INotebookTracker) {
       case 'setNotebook':
         Private.setNotebook(notebookTracker, app, data.data, 'test');
         break;
+      case 'restartNotebook':
+        console.log('Restarting notebook');
+        Private.restartNotebook(notebookTracker);
+        break;
       default:
         console.log('Unknown message');
     }
@@ -214,6 +218,16 @@ namespace Private {
     }
   }
 
+  export function restartNotebook(notebookTracker: INotebookTracker) {
+    if (notebookTracker.currentWidget) {
+      const sessionContext = notebookTracker.currentWidget.sessionContext;
+      if (sessionContext) {
+        sessionContext.session?.kernel?.restart();
+        console.log('Restarting kernel');
+      }
+    }
+  }
+
   type Notebook = {
     metadata: {
       kernelspec: {
@@ -257,7 +271,7 @@ namespace Private {
     // notebookTracker.currentWidget?.content.model?.fromJSON(notebook);
 
     // create new notebook
-    const manager = new ContentsManager();
+    // const manager = new ContentsManager();
 
     const notebookName = 'tensorboard.ipynb';
 
