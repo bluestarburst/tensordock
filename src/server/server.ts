@@ -1,11 +1,23 @@
 import { WebSocket, WebSocketServer } from 'ws';
 
-const clients: WebSocket[] = [];
+const clients: { [key: string]: WebSocket } = {};
 const jupyter: WebSocket[] = [];
 
 console.log('Starting server');
 
 const wss = new WebSocketServer({ port: 5000 });
+
+const createId = () => {
+  let id = Math.random().toString(36).substring(7);
+  while (clients[id]) {
+    id = Math.random().toString(36).substring(7);
+  }
+  return id;
+};
+
+const findId = (ws: WebSocket) => {
+  return Object.keys(clients).find(key => clients[key] === ws) ?? '-1';
+};
 
 wss.on('connection', (ws: WebSocket) => {
   ws.onopen = () => {
@@ -17,10 +29,20 @@ wss.on('connection', (ws: WebSocket) => {
     // console.log('Message from server ', message);
     const data = JSON.parse(message.data.toString());
     console.log(data);
+
+    const id = findId(ws);
+
     switch (data.type) {
+      case 'canvasData':
+        for (const c of Object.values(clients)) {
+          c.send(
+            JSON.stringify({ type: 'canvasData', data: { ...data.data, id } })
+          );
+        }
+        break;
       case 'client':
         console.log('Setting client');
-        clients.push(ws);
+        clients[createId()] = ws;
         break;
       case 'jupyter':
         console.log('Setting notebook');
@@ -45,7 +67,7 @@ wss.on('connection', (ws: WebSocket) => {
         break;
       case 'setPartial':
       case 'setOutput':
-        for (const c of clients) {
+        for (const c of Object.values(clients)) {
           c.send(JSON.stringify({ type: data.type, data: data.data }));
         }
         break;
@@ -56,8 +78,11 @@ wss.on('connection', (ws: WebSocket) => {
 
   ws.on('close', () => {
     console.log('WebSocket closed');
-    if (clients.includes(ws)) {
-      clients.splice(clients.indexOf(ws), 1);
+    if (
+      Object.values(clients).includes(ws) &&
+      Object.keys(clients).find(key => clients[key] === ws)
+    ) {
+      delete clients[Object.keys(clients).find(key => clients[key] === ws)!];
     } else if (jupyter.includes(ws)) {
       jupyter.splice(jupyter.indexOf(ws), 1);
     }
