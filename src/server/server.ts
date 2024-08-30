@@ -28,16 +28,20 @@ wss.on('connection', (ws: WebSocket) => {
   ws.onmessage = message => {
     // console.log('Message from server ', message);
     const data = JSON.parse(message.data.toString());
-    console.log(data);
+    // console.log(data);
 
     const id = findId(ws);
 
     switch (data.type) {
       case 'canvasData':
         for (const c of Object.values(clients)) {
-          c.send(
-            JSON.stringify({ type: 'canvasData', data: { ...data.data, id } })
-          );
+          if (c !== ws) {
+            c.send(
+              JSON.stringify({ type: 'canvasData', data: { ...data.data, id } })
+            );
+          } else {
+            console.log('Not sending to self');
+          }
         }
         break;
       case 'client':
