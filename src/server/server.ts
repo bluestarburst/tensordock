@@ -39,8 +39,6 @@ wss.on('connection', (ws: WebSocket) => {
             c.send(
               JSON.stringify({ type: 'canvasData', data: { ...data.data, id } })
             );
-          } else {
-            console.log('Not sending to self');
           }
         }
         break;
@@ -86,6 +84,19 @@ wss.on('connection', (ws: WebSocket) => {
       Object.values(clients).includes(ws) &&
       Object.keys(clients).find(key => clients[key] === ws)
     ) {
+      // send message to all clients that this client has disconnected
+      for (const c of Object.values(clients)) {
+        c.send(
+          JSON.stringify({
+            type: 'canvasData',
+            data: {
+              type: 'disconnect',
+              id: Object.keys(clients).find(key => clients[key] === ws)
+            }
+          })
+        );
+      }
+
       delete clients[Object.keys(clients).find(key => clients[key] === ws)!];
     } else if (jupyter.includes(ws)) {
       jupyter.splice(jupyter.indexOf(ws), 1);
