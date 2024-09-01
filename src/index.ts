@@ -109,7 +109,7 @@ function activate(app: JupyterFrontEnd, notebookTracker: INotebookTracker) {
 
 function startWS(app: JupyterFrontEnd, notebookTracker: INotebookTracker) {
   // create client websocket
-  const ws = new WebSocket('ws://localhost:5000');
+  const ws = new WebSocket('wss://localhost:5000');
   ws.onopen = () => {
     console.log('WebSocket opened');
     ws.send(JSON.stringify({ type: 'jupyter', data: '' }));
