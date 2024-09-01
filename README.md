@@ -46,6 +46,33 @@ jupyter labextension develop . --overwrite
 # Rebuild extension Typescript source after making changes
 jlpm build
 ```
+## Running the Server
+
+### Local
+
+To run the server locally, execute:
+
+```bash
+jlpm server
+```
+
+### Shared Session
+
+To run the server with a shared session, install [ngrok](https://ngrok.com/) and execute:
+
+```bash
+ngrok tcp 5000
+```
+
+You will get a URL that you can use to connect to the server.
+
+Please note that the server is run on ws://localhost:5000 by default.
+```
+tcp://X.tcp.ngrok.io:XXXXX -> ws://X.tcp.ngrok.io:XXXXX
+```
+
+
+### Watching the extension only
 
 You can watch the source directory and run JupyterLab at the same time in different terminals to watch for changes in the extension's source and automatically rebuild the extension.
 
