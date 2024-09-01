@@ -70,7 +70,7 @@ You will get a URL that you can use to connect to the server.
 
 Please note that the server is run on ws://localhost:5000 by default.
 ```
-tcp://X.tcp.ngrok.io:XXXXX -> ws://X.tcp.ngrok.io:XXXXX
+tcp://X.tcp.ngrok.io:XXXXX -> wss://X.tcp.ngrok.io:XXXXX
 ```
 
 

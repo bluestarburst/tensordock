@@ -30,6 +30,7 @@ wss.on('headers', (headers, req) => {
   headers.push('Access-Control-Allow-Credentials: true');
 });
 
+
 const createId = () => {
   let id = Math.random().toString(36).substring(7);
   while (clients[id]) {
