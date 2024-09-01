@@ -60,8 +60,10 @@
         "@jupyterlab/application": "^4.2.4",
         "@jupyterlab/apputils": "^4.3.4",
         "@lumino/widgets": "^2.5.0",
+        "@types/express": "^4.17.21",
         "@types/ws": "^8.5.12",
         "bufferutil": "^4.0.8",
+        "express": "^4.19.2",
         "ws": "^8.18.0"
     },
     "devDependencies": {

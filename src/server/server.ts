@@ -1,5 +1,8 @@
 import { WebSocket, WebSocketServer } from 'ws';
 import { createServer } from 'https';
+
+import express from 'express';
+
 import fs from 'fs';
 
 const clients: { [key: string]: WebSocket } = {};
@@ -7,17 +10,24 @@ const jupyter: WebSocket[] = [];
 
 console.log('Starting server');
 
-const https = createServer({
-  key: fs.readFileSync('key.pem'),
-  cert: fs.readFileSync('cert.pem')
+const app = express();
+app.use(express.static(process.env.SERVE_DIRECTORY || 'tensorboard/out'));
+app.get('/', (req, res) => {
+  return res.end('<p>This server serves up static files.</p>');
 });
 
-https.on('request', (req, res) => {
-  res.writeHead(200);
-  res.end('hello world\n');
-});
+// route tensorboard/_next requests to tensorboard/out/_next
+app.use('/tensorboard', express.static('tensorboard/out'));
 
-https.listen(5000, () => {
+const https = createServer(
+  {
+    key: fs.readFileSync('key.pem'),
+    cert: fs.readFileSync('cert.pem')
+  },
+  app
+);
+
+https.listen(443, () => {
   console.log('Server started on port 5000');
 });
 
