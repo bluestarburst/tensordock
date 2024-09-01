@@ -1,11 +1,34 @@
 import { WebSocket, WebSocketServer } from 'ws';
+import { createServer } from 'https';
+import fs from 'fs';
 
 const clients: { [key: string]: WebSocket } = {};
 const jupyter: WebSocket[] = [];
 
 console.log('Starting server');
 
-const wss = new WebSocketServer({ port: 5000 });
+const https = createServer({
+  key: fs.readFileSync('key.pem'),
+  cert: fs.readFileSync('cert.pem')
+});
+
+https.on('request', (req, res) => {
+  res.writeHead(200);
+  res.end('hello world\n');
+});
+
+https.listen(5000, () => {
+  console.log('Server started on port 5000');
+});
+
+const wss = new WebSocketServer({ server: https });
+// const wss = new WebSocketServer({ port: 4000 });
+
+// allow cors
+wss.on('headers', (headers, req) => {
+  headers.push('Access-Control-Allow-Origin: *');
+  headers.push('Access-Control-Allow-Credentials: true');
+});
 
 const createId = () => {
   let id = Math.random().toString(36).substring(7);
