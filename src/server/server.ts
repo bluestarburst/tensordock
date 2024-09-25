@@ -12,12 +12,13 @@ console.log('Starting server');
 
 const app = express();
 app.use(express.static(process.env.SERVE_DIRECTORY || 'tensorboard/out'));
-app.get('/', (req, res) => {
-  return res.end('<p>This server serves up static files.</p>');
-});
+// app.get('/', (req, res) => {
+//   return res.end('<p>This server serves up static files.</p>');
+// });
 
 // route tensorboard/_next requests to tensorboard/out/_next
 app.use('/tensorboard', express.static('tensorboard/out'));
+app.use('/', express.static('tensorboard/out'));
 
 const https = createServer(
   {
@@ -28,7 +29,7 @@ const https = createServer(
 );
 
 https.listen(443, () => {
-  console.log('Server started on port 5000');
+  console.log('Server started');
 });
 
 const wss = new WebSocketServer({ server: https });
