@@ -81,10 +81,6 @@ class JupyterWebSocketServer:
                 
                 elif data['action'] == 'restart_kernel':
                     self.kernel_manager.restart_kernel()
-                    self.kernel_state = 'idle'
-                    self.is_working = False
-                    self.kc = self.kernel_manager.client()
-                    self.kc.start_channels()
                     print("Restarted kernel")
                     await self.broadcast({'action': 'kernel_restarted'})
                 elif data['action'] == 'canvas_data':
@@ -118,9 +114,14 @@ class JupyterWebSocketServer:
             return
         
         self.is_working = True
-        msg_id = self.kc.execute(code, allow_stdin=True)
+        msg_id = self.kc.execute_interactive(code)
         result = {'outputs': [], 'cell_id': cell_id}
-        is_error = False
+        
+        # if the kernel needs input
+
+            
+        # check if input is needed
+        self.kc.stdin_channel
         
 
         print("Executing code")
@@ -128,68 +129,45 @@ class JupyterWebSocketServer:
             try:
                 print("Waiting for message")                
                 msg = await asyncio.wait_for(self.kc._async_get_iopub_msg(), timeout=10)
-                print("\n\n\nReceived message", msg)
+                print("Received message", msg)
                 
-                try:
-                    stdin_msg = self.kc.stdin_channel.get_msg(timeout=0.1)
-                    print("Stdin message", stdin_msg)
-                    
-                    if stdin_msg and stdin_msg['msg_type'] == 'input_request':
-                        print("Input requested")
-                        await self.broadcast({'action': 'request_input', 'prompt': stdin_msg['content']['prompt'], 'cell_id': cell_id})
-                        print("Waiting for input")
-                        self.kc.input(await self.input_queue.get())
-                        while not self.input_queue.empty():
-                            await self.input_queue.get()
-                except asyncio.TimeoutError:
-                    print("No input")    
-                except Exception as e:
-                    print("INPUT Error", e)
-            
-                if msg['msg_type'] == 'execute_result':
-                    result['outputs'].append({
-                        'output_type': 'execute_result',
-                        'data': msg['content']['data']
-                    })
-                elif msg['msg_type'] == 'stream':
-                    result['outputs'].append({
-                        'output_type': 'stream',
-                        'name': msg['content']['name'],
-                        'text': msg['content']['text']
-                    })
-                    # broadcast to all clients
-                    await self.broadcast({'action': 'execution_partial', 'output': {
-                        'output_type': 'stream',
-                        'name': msg['content']['name'],
-                        'text': msg['content']['text'],
-                        'cell_id': cell_id
-                    }})
-                elif msg['msg_type'] == 'error':
-                    
-                    print("Error\n", msg['content']['ename'], msg['content']['evalue'])
-                    
-                    result['outputs'].append({
-                        'output_type': 'error',
-                        'ename': msg['content']['ename'],
-                        'evalue': msg['content']['evalue'],
-                        'traceback': msg['content']['traceback']
-                    })
-                    
-                    await self.broadcast({'action': 'execution_result', 'result': {
-                        'outputs': [{
+                if 'content' in msg and 'execution_state' in msg['content']:
+                    self.kernel_state = msg['content']['execution_state']
+                
+                # if msg['msg_type'] == 'execute_input':
+                #     await self.broadcast({'action': 'request_input', 'prompt': msg['content']['code'], 'cell_id': cell_id})
+                #     print("Waiting for input")
+                #     self.kc.input(await self.input_queue.get())
+                #     continue
+                
+                if msg['parent_header'].get('msg_id') == msg_id:
+                    if msg['msg_type'] == 'execute_result':
+                        result['outputs'].append({
+                            'output_type': 'execute_result',
+                            'data': msg['content']['data']
+                        })
+                    elif msg['msg_type'] == 'stream':
+                        result['outputs'].append({
+                            'output_type': 'stream',
+                            'name': msg['content']['name'],
+                            'text': msg['content']['text']
+                        })
+                        # broadcast to all clients
+                        await self.broadcast({'action': 'execution_partial', 'output': {
+                            'output_type': 'stream',
+                            'name': msg['content']['name'],
+                            'text': msg['content']['text'],
+                            'cell_id': cell_id
+                        }})
+                    elif msg['msg_type'] == 'error':
+                        result['outputs'].append({
                             'output_type': 'error',
                             'ename': msg['content']['ename'],
                             'evalue': msg['content']['evalue'],
                             'traceback': msg['content']['traceback']
-                        }],
-                        'cell_id': cell_id
-                    }})
-                    
-                    self.is_working = False
-                    
-                    return
-                elif msg['msg_type'] == 'status' and msg['content']['execution_state'] == 'idle':
-                    break
+                        })
+                    elif msg['msg_type'] == 'status' and msg['content']['execution_state'] == 'idle':
+                        break
                     
                 if 'content' in msg and 'execution_state' in msg['content'] and msg['content']['execution_state'] == 'idle':
                     print("Execution done")
@@ -203,7 +181,17 @@ class JupyterWebSocketServer:
                     'traceback': []
                 })
                 break
+            except Exception as e:
+                print(f"An error occurred: {e}")
+                result['outputs'].append({
+                    'output_type': 'error',
+                    'ename': 'Error',
+                    'evalue': str(e),
+                    'traceback': []
+                })
+                break
                 
+        await asyncio.sleep(0.01)
         print("Broadcasting execution result")
         await self.broadcast({'action': 'execution_result', 'result': result})
 
