@@ -14,7 +14,9 @@ class JupyterWebSocketServer:
         self.kernel_manager.start_kernel()
         self.kc = self.kernel_manager.client()
         self.kc.start_channels()
-
+        
+        asyncio.create_task(self.execute_code('print("Hello World!")', '1'))
+        
         self.action_queue = asyncio.Queue()
         self.is_working = False
         self.kernel_state = 'idle'
@@ -175,19 +177,14 @@ class JupyterWebSocketServer:
                         'traceback': msg['content']['traceback']
                     })
                     
-                    await self.broadcast({'action': 'execution_result', 'result': {
-                        'outputs': [{
-                            'output_type': 'error',
-                            'ename': msg['content']['ename'],
-                            'evalue': msg['content']['evalue'],
-                            'traceback': msg['content']['traceback']
-                        }],
+                    await self.broadcast({'action': 'execution_partial', 'output': {
+                        'output_type': 'error',
+                        'ename': msg['content']['ename'],
+                        'evalue': msg['content']['evalue'],
+                        'traceback': msg['content']['traceback'],
                         'cell_id': cell_id
                     }})
                     
-                    self.is_working = False
-                    
-                    return
                 elif msg['msg_type'] == 'status' and msg['content']['execution_state'] == 'idle':
                     break
                     
