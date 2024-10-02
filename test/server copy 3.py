@@ -146,7 +146,10 @@ class JupyterWebSocketServer:
                 #         'traceback': []
                 #     })
                 #     break
-
+                
+                self.kc._async_
+                
+                print("Waiting for message")                
                 msg = await asyncio.wait_for(self.kc._async_get_iopub_msg(), timeout=10)
                 # print("\n\n\nReceived message", msg)
                 
