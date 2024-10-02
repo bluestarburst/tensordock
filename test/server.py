@@ -25,6 +25,9 @@ class JupyterWebSocketServer:
         self.input_queue = asyncio.Queue()
         self.last_input = None
         
+        self.interrupt_flag = False
+        self.request_input = False
+        
         # start worker thread
         asyncio.create_task(self.worker())
         
@@ -61,7 +64,6 @@ class JupyterWebSocketServer:
                                 
             self.action_queue.task_done()        
     
-
     async def handle_client(self, websocket, path):
         self.clients.add(websocket)
         client_id = id(websocket)
@@ -74,19 +76,14 @@ class JupyterWebSocketServer:
                     print(f"Started kernel with ID: {kernel_id}")
                     await self.broadcast({'action': 'kernel_started', 'kernel_id': kernel_id})
                 elif data['action'] == 'execute_code':
-                    # kernel_id = data['kernel_id']
-                    # code = data['code']
-                    # cell_id = data['cell_id']
-                    # result = await self.execute_code(code, cell_id)
-                    # await self.broadcast({'action': 'execution_result', 'result': result})
                     await self.action_queue.put(data)
-                
                 elif data['action'] == 'restart_kernel':
                     self.kernel_manager.restart_kernel()
                     self.kernel_state = 'idle'
                     self.is_working = False
                     self.kc = self.kernel_manager.client()
                     self.kc.start_channels()
+                    asyncio.create_task(self.execute_code('print("Hello World!")', '1'))
                     print("Restarted kernel")
                     await self.broadcast({'action': 'kernel_restarted'})
                 elif data['action'] == 'canvas_data':
@@ -96,6 +93,12 @@ class JupyterWebSocketServer:
                 elif data['action'] == 'input':
                     print("Received input", data['input'])
                     await self.input_queue.put(data['input'])
+                elif data['action'] == 'interrupt_kernel':
+                    print("Interrupting kernel")
+                    self.kernel_manager.interrupt_kernel()
+                    if self.request_input:
+                        self.input_queue.put_nowait('')
+                    self.interrupt_flag = True
                 else:
                     print(f"Unknown action: {data['action']}")      
         finally:
@@ -103,6 +106,8 @@ class JupyterWebSocketServer:
             self.clients.remove(websocket)
 
     async def execute_code(self, code, cell_id):
+        
+        await self.broadcast({'action': 'start_running_cell', 'cell_id': cell_id})
         
         if self.is_working and self.kernel_state == 'idle':
             print("Kernel is stuck!!!")
@@ -120,17 +125,31 @@ class JupyterWebSocketServer:
             return
         
         self.is_working = True
-        msg_id = self.kc.execute(code, allow_stdin=True)
+        self.kc.execute(code, allow_stdin=True)
         result = {'outputs': [], 'cell_id': cell_id}
-        is_error = False
-        
 
         print("Executing code")
         while True:
             try:
+                
+                # allow asyncio to check for interrupt messages
+                await asyncio.sleep(0.1)
+                
+                # if self.interrupt_flag:
+                #     self.interrupt_flag = False
+                #     self.kernel_manager.interrupt_kernel()
+                #     print("Interrupted kernel")
+                #     result['outputs'].append({
+                #         'output_type': 'error',
+                #         'ename': 'KeyboardInterrupt',
+                #         'evalue': 'Execution interrupted',
+                #         'traceback': []
+                #     })
+                #     break
+                
                 print("Waiting for message")                
                 msg = await asyncio.wait_for(self.kc._async_get_iopub_msg(), timeout=10)
-                print("\n\n\nReceived message", msg)
+                # print("\n\n\nReceived message", msg)
                 
                 try:
                     stdin_msg = self.kc.stdin_channel.get_msg(timeout=0.1)
@@ -138,6 +157,7 @@ class JupyterWebSocketServer:
                     
                     if stdin_msg and stdin_msg['msg_type'] == 'input_request':
                         print("Input requested")
+                        self.request_input = True
                         await self.broadcast({'action': 'request_input', 'prompt': stdin_msg['content']['prompt'], 'cell_id': cell_id})
                         print("Waiting for input")
                         self.kc.input(await self.input_queue.get())
@@ -145,8 +165,22 @@ class JupyterWebSocketServer:
                             await self.input_queue.get()
                 except asyncio.TimeoutError:
                     print("No input")    
-                except Exception as e:
-                    print("INPUT Error", e)
+                except Exception:
+                    self.request_input = False
+                    # print("INPUT Error", e)
+                    
+                # if self.interrupt_flag:
+                #     self.interrupt_flag = False
+                #     print("Interrupted kernel")
+                #     await self.broadcast({'action': 'execution_partial', 'output': {
+                #         'output_type': 'stream',
+                #         'name': 'stdout',
+                #         'text': 'Kernel interrupted',
+                #         'cell_id': cell_id
+                #     }})
+                #     break
+                    
+                self.request_input = False
             
                 if msg['msg_type'] == 'execute_result':
                     result['outputs'].append({
