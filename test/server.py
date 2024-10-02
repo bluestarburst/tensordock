@@ -103,6 +103,9 @@ class JupyterWebSocketServer:
                     print(f"Unknown action: {data['action']}")      
         finally:
             print(f"Client disconnected with ID: {client_id}")
+            
+            await self.broadcast({'action': 'canvas_data', 'data': {'type': 'disconnect', 'id': str(client_id)}}, client_id)
+            
             self.clients.remove(websocket)
 
     async def execute_code(self, code, cell_id):
