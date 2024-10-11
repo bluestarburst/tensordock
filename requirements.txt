@@ -1,0 +1,4 @@
+websockets==13.1
+jupyter_client==8.6.2
+ipykernel==6.29.5
+ipython==8.26.0
