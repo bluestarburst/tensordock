@@ -1,16 +1,23 @@
 import asyncio
-import websockets
 import json
 from jupyter_client import KernelManager
 from jupyter_client.multikernelmanager import MultiKernelManager
 import threading
 import time
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer
+from aiortc.contrib.signaling import object_from_string, object_to_string
 
+print("bash test")
 
-class JupyterWebSocketServer:
+RTC_CONFIG = RTCConfiguration(iceServers=[
+    RTCIceServer(urls=["stun:stun.l.google.com:19302"])
+])
+
+class JupyterWebRTCServer:
     def __init__(self):
         self.kernel_manager = KernelManager()
-        self.clients = set()
+        self.peer_connections = set()
+        self.data_channels = set()
         self.kernel_manager.start_kernel()
         self.kc = self.kernel_manager.client()
         self.kc.start_channels()
@@ -31,29 +38,25 @@ class JupyterWebSocketServer:
         # start worker thread
         asyncio.create_task(self.worker())
         
-        # # start kernel checker
+        # start kernel checker
         threading.Thread(target=self.check_kernel, daemon=True).start()
-        
+
     def check_kernel(self):
         while True:
-            # self.is_working = not self.is_working
-            
-            # print("Checking kernel state", self.is_working, self.kernel_state)
             if self.is_working and self.kernel_state == 'idle':
                 time.sleep(5)
                 if self.is_working and self.kernel_state == 'idle':
-                    print("Kernel might be stuck!!!")
-                    # interrupt the worker thread
-                    # self.worker_thread.interrupt()
-            
+                    stuck = True
+                    print("Kernel might be stuck")
+                    stuck = True
+                    print("Kernel might be stuck")
             time.sleep(1)
-        
+
     async def worker(self):
         print("Worker started")
         while True:
             action = await self.action_queue.get()
             if action['action'] == 'execute_code':
-                # await self.execute_code(action['code'], action['cell_id'])
                 await self.broadcast({'action': 'execution_partial', 'output': {
                     'output_type': 'stream',
                     'name': 'stdout',
@@ -61,16 +64,30 @@ class JupyterWebSocketServer:
                     'cell_id': action['cell_id']
                 }})
                 await self.execute_code(action['code'], action['cell_id'])
-                                
-            self.action_queue.task_done()        
-    
-    async def handle_client(self, websocket, path):
-        self.clients.add(websocket)
-        client_id = id(websocket)
-        print(f"New client connected with ID: {client_id}")
-        try:
-            async for message in websocket:
+            self.action_queue.task_done()
+
+    async def handle_client(self, offer):
+        
+        print("Handling client")
+        
+        pc = RTCPeerConnection(configuration=RTC_CONFIG)
+        self.peer_connections.add(pc)
+        client_id = id(pc)
+        
+        @pc.on("iceconnectionstatechange")
+        async def on_ice_connection_state_change():
+            print(f"ICE connection state is {pc.iceConnectionState}")
+        
+        @pc.on("datachannel")
+        def on_datachannel(channel):
+            self.data_channels.add(channel)
+            print(f"Data channel added with ID: {client_id}")
+            
+            @channel.on("message")
+            async def on_message(message):
+                
                 data = json.loads(message)
+                print(f"Received message: {data}")
                 if data['action'] == 'start_kernel':
                     kernel_id = self.kernel_manager.start_kernel()
                     print(f"Started kernel with ID: {kernel_id}")
@@ -100,20 +117,38 @@ class JupyterWebSocketServer:
                         self.input_queue.put_nowait('')
                     self.interrupt_flag = True
                 else:
-                    print(f"Unknown action: {data['action']}")      
-        finally:
-            print(f"Client disconnected with ID: {client_id}")
-            
-            await self.broadcast({'action': 'canvas_data', 'data': {'type': 'disconnect', 'id': str(client_id)}}, client_id)
-            
-            self.clients.remove(websocket)
+                    print(f"Unknown action: {data['action']}")
+
+            @channel.on("close")
+            def on_close():
+                print(f"Client disconnected with ID: {client_id}")
+                self.data_channels.remove(channel)
+                if pc in self.peer_connections:
+                    self.peer_connections.remove(pc)
+                asyncio.create_task(
+                    self.broadcast(
+                        {'action': 'canvas_data', 'data': {'type': 'disconnect', 'id': str(client_id)}},
+                        client_id
+                    )
+                )
+
+        # Set the remote description from the offer
+        await pc.setRemoteDescription(RTCSessionDescription(
+            sdp=offer["sdp"],
+            type=offer["type"]
+        ))
+
+        # Create and set local description
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+
+        return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
 
     async def execute_code(self, code, cell_id):
-        
         await self.broadcast({'action': 'start_running_cell', 'cell_id': cell_id})
         
         if self.is_working and self.kernel_state == 'idle':
-            print("Kernel is stuck!!!")
+            print(f"Kernel is stuck")
             await self.broadcast({'action': 'execution_result', 'result': {
                 'outputs': [{
                     'output_type': 'error',
@@ -134,24 +169,9 @@ class JupyterWebSocketServer:
         print("Executing code")
         while True:
             try:
-                
-                # allow asyncio to check for interrupt messages
                 await asyncio.sleep(0.1)
                 
-                # if self.interrupt_flag:
-                #     self.interrupt_flag = False
-                #     self.kernel_manager.interrupt_kernel()
-                #     print("Interrupted kernel")
-                #     result['outputs'].append({
-                #         'output_type': 'error',
-                #         'ename': 'KeyboardInterrupt',
-                #         'evalue': 'Execution interrupted',
-                #         'traceback': []
-                #     })
-                #     break
-
                 msg = await asyncio.wait_for(self.kc._async_get_iopub_msg(), timeout=10)
-                # print("\n\n\nReceived message", msg)
                 
                 try:
                     stdin_msg = self.kc.stdin_channel.get_msg(timeout=0.1)
@@ -160,7 +180,11 @@ class JupyterWebSocketServer:
                     if stdin_msg and stdin_msg['msg_type'] == 'input_request':
                         print("Input requested")
                         self.request_input = True
-                        await self.broadcast({'action': 'request_input', 'prompt': stdin_msg['content']['prompt'], 'cell_id': cell_id})
+                        await self.broadcast({
+                            'action': 'request_input',
+                            'prompt': stdin_msg['content']['prompt'],
+                            'cell_id': cell_id
+                        })
                         print("Waiting for input")
                         self.kc.input(await self.input_queue.get())
                         while not self.input_queue.empty():
@@ -169,19 +193,7 @@ class JupyterWebSocketServer:
                     print("No input")    
                 except Exception:
                     self.request_input = False
-                    # print("INPUT Error", e)
-                    
-                # if self.interrupt_flag:
-                #     self.interrupt_flag = False
-                #     print("Interrupted kernel")
-                #     await self.broadcast({'action': 'execution_partial', 'output': {
-                #         'output_type': 'stream',
-                #         'name': 'stdout',
-                #         'text': 'Kernel interrupted',
-                #         'cell_id': cell_id
-                #     }})
-                #     break
-                    
+                
                 self.request_input = False
             
                 if msg['msg_type'] == 'execute_result':
@@ -195,7 +207,6 @@ class JupyterWebSocketServer:
                         'name': msg['content']['name'],
                         'text': msg['content']['text']
                     })
-                    # broadcast to all clients
                     await self.broadcast({'action': 'execution_partial', 'output': {
                         'output_type': 'stream',
                         'name': msg['content']['name'],
@@ -203,7 +214,6 @@ class JupyterWebSocketServer:
                         'cell_id': cell_id
                     }})
                 elif msg['msg_type'] == 'error':
-                    
                     print("Error\n", msg['content']['ename'], msg['content']['evalue'])
                     
                     result['outputs'].append({
@@ -244,15 +254,44 @@ class JupyterWebSocketServer:
         return result
 
     async def broadcast(self, message, client_id=None):
-        if self.clients:
-            await asyncio.gather(*[client.send(json.dumps(message)) for client in self.clients if id(client) != client_id])
-            # await asyncio.gather(*[client.send(json.dumps(message)) for client in self.clients])
+        
+        async def async_send(channel, message):
+            print(f"Sending {message} to {channel}")
+            channel.send(message)
+        
+        if self.data_channels:
+            message_str = json.dumps(message)
+            tasks = [
+                async_send(channel, message_str)
+                for channel in self.data_channels
+            ]
+            if tasks:
+                await asyncio.gather(*tasks)
 
 
 async def main():
-    server = JupyterWebSocketServer()
-    async with websockets.serve(server.handle_client, "localhost", 8765):
-        await asyncio.Future()  # run forever
+    from aiohttp import web
+    
+    server = JupyterWebRTCServer()
+    
+    async def handle_offer(request):
+        params = await request.json() # the json is { "type": "offer", "offer": "<sdp>" }
+        response = await server.handle_client(params)
+        return web.Response(
+            content_type="application/json",
+            text=json.dumps(response)
+        )
+    
+    app = web.Application()
+    app.router.add_post("/offer", handle_offer)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8765)
+    
+    print("Server started at http://0.0.0.0:8765")
+    await site.start()
+    await asyncio.Future()  # run forever
 
 if __name__ == "__main__":
     asyncio.run(main())
