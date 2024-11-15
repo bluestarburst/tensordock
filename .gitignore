@@ -126,3 +126,4 @@ dmypy.json
 
 key.pem
 cert.pem
+server.log
