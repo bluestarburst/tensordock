@@ -288,7 +288,7 @@ async def main():
     
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", os.getenv('SIGNAL', 8765))
+    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv('SIGNAL', 8765)))
     
     print(f"Server started at http://0.0.0.0:{os.getenv('SIGNAL', 8765)}")
     await site.start()
