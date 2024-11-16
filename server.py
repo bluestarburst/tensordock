@@ -6,6 +6,7 @@ import threading
 import time
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer
 from aiortc.contrib.signaling import object_from_string, object_to_string
+import os
 
 print("bash test")
 
@@ -287,9 +288,9 @@ async def main():
     
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 8765)
+    site = web.TCPSite(runner, "0.0.0.0", os.getenv('SIGNAL', 8765))
     
-    print("Server started at http://0.0.0.0:8765")
+    print(f"Server started at http://0.0.0.0:{os.getenv('SIGNAL', 8765)}")
     await site.start()
     await asyncio.Future()  # run forever
 
