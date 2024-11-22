@@ -17,14 +17,14 @@ turn_client_address = os.environ.get('TURN_ADDRESS', f"{os.environ.get('PUBLIC_I
 turn_username = os.environ.get('TURN_USERNAME', 'user')
 turn_password = os.environ.get('TURN_PASSWORD', os.environ.get('OPEN_BUTTON_TOKEN', 'password'))
 
-RTC_CONFIG = RTCConfiguration(iceServers=[
-    RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
-    RTCIceServer(
-        urls=f"turn:{turn_server_address}",
-        username=f"{turn_username}",
-        credential=f"{turn_password}"
-    )
-])
+RTC_CONFIG = RTCConfiguration([
+            RTCIceServer(urls="stun:stun.l.google.com:19302"),
+            RTCIceServer(
+                urls=f"turn:{turn_server_address}",
+                username=f"{turn_username}",
+                credential=f"{turn_password}"
+            )
+        ])
 
 class JupyterWebRTCServer:
     def __init__(self):
