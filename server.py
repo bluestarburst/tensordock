@@ -4,14 +4,26 @@ from jupyter_client import KernelManager
 from jupyter_client.multikernelmanager import MultiKernelManager
 import threading
 import time
-from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer, RTCDtlsTransport
 from aiortc.contrib.signaling import object_from_string, object_to_string
 import os
 
 print("bash test")
 
+transports = RTCDtlsTransport()
+
+turn_server_address = os.environ.get('TURN_ADDRESS', f"127.0.0.1:{os.environ.get('VAST_UDP_PORT_70000')}?transport=udp")
+turn_client_address = os.environ.get('TURN_ADDRESS', f"{os.environ.get('PUBLIC_IPADDR')}:{os.environ.get('VAST_UDP_PORT_70000')}?transport=udp")
+turn_username = os.environ.get('TURN_USERNAME', 'user')
+turn_password = os.environ.get('TURN_PASSWORD', os.environ.get('OPEN_BUTTON_TOKEN', 'password'))
+
 RTC_CONFIG = RTCConfiguration(iceServers=[
-    RTCIceServer(urls=["stun:stun.l.google.com:19302"])
+    RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
+    RTCIceServer(
+        urls=f"turn:{turn_server_address}",
+        username=f"{turn_username}",
+        credential=f"{turn_password}"
+    )
 ])
 
 class JupyterWebRTCServer:
