@@ -10,8 +10,6 @@ import os
 
 print("bash test")
 
-transports = RTCDtlsTransport()
-
 turn_server_address = os.environ.get('TURN_ADDRESS', f"127.0.0.1:{os.environ.get('VAST_UDP_PORT_70000')}?transport=udp")
 turn_client_address = os.environ.get('TURN_ADDRESS', f"{os.environ.get('PUBLIC_IPADDR')}:{os.environ.get('VAST_UDP_PORT_70000')}?transport=udp")
 turn_username = os.environ.get('TURN_USERNAME', 'user')
