@@ -7,6 +7,7 @@ import time
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer, RTCDtlsTransport
 from aiortc.contrib.signaling import object_from_string, object_to_string
 import os
+import logging
 
 print("bash test")
 
@@ -14,6 +15,12 @@ turn_server_address = os.environ.get('TURN_ADDRESS', f"0.0.0.0:{os.environ.get('
 turn_client_address = os.environ.get('TURN_ADDRESS', f"{os.environ.get('PUBLIC_IPADDR')}:{os.environ.get('TURN')}?transport=udp")
 turn_username = os.environ.get('TURN_USERNAME', 'user')
 turn_password = os.environ.get('TURN_PASSWORD', os.environ.get('OPEN_BUTTON_TOKEN', 'password'))
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s %(levelname)s %(message)s'
+)
+logger = logging.getLogger("webrtc")
 
 RTC_CONFIG = RTCConfiguration([
             RTCIceServer(urls="stun:stun.l.google.com:19302"),
@@ -23,6 +30,8 @@ RTC_CONFIG = RTCConfiguration([
                 credential=f"{turn_password}"
             )
         ])
+
+print("RTC_CONFIG", RTC_CONFIG)
 
 class JupyterWebRTCServer:
     def __init__(self):
