@@ -10,8 +10,8 @@ import os
 
 print("bash test")
 
-turn_server_address = os.environ.get('TURN_ADDRESS', f"127.0.0.1:{os.environ.get('VAST_UDP_PORT_70000')}?transport=udp")
-turn_client_address = os.environ.get('TURN_ADDRESS', f"{os.environ.get('PUBLIC_IPADDR')}:{os.environ.get('VAST_UDP_PORT_70000')}?transport=udp")
+turn_server_address = os.environ.get('TURN_ADDRESS', f"127.0.0.1:{os.environ.get('VAST_UDP_PORT_70001')}?transport=udp")
+turn_client_address = os.environ.get('TURN_ADDRESS', f"{os.environ.get('PUBLIC_IPADDR')}:{os.environ.get('VAST_UDP_PORT_70001')}?transport=udp")
 turn_username = os.environ.get('TURN_USERNAME', 'user')
 turn_password = os.environ.get('TURN_PASSWORD', os.environ.get('OPEN_BUTTON_TOKEN', 'password'))
 
@@ -298,9 +298,9 @@ async def main():
     
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv('SIGNAL', 8765)))
+    site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get('VAST_UDP_PORT_70000', 70000)))
     
-    print(f"Server started at http://0.0.0.0:{os.getenv('SIGNAL', 8765)}")
+    print(f"Server started at http://0.0.0.0:{os.environ.get('VAST_UDP_PORT_70000', 70000)}")
     await site.start()
     await asyncio.Future()  # run forever
 
