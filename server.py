@@ -10,7 +10,7 @@ import os
 
 print("bash test")
 
-turn_server_address = os.environ.get('TURN_ADDRESS', f"127.0.0.1:{os.environ.get('TURN')}?transport=udp")
+turn_server_address = os.environ.get('TURN_ADDRESS', f"0.0.0.0:{os.environ.get('TURN')}?transport=udp")
 turn_client_address = os.environ.get('TURN_ADDRESS', f"{os.environ.get('PUBLIC_IPADDR')}:{os.environ.get('TURN')}?transport=udp")
 turn_username = os.environ.get('TURN_USERNAME', 'user')
 turn_password = os.environ.get('TURN_PASSWORD', os.environ.get('OPEN_BUTTON_TOKEN', 'password'))
