@@ -37,7 +37,7 @@ class JupyterWebRTCServer:
     def __init__(self):
         self.kernel_manager = KernelManager()
         self.peer_connections = set()
-        self.data_channels = set()
+        self.data_channels = {}
         self.kernel_manager.start_kernel()
         self.kc = self.kernel_manager.client()
         self.kc.start_channels()
@@ -100,7 +100,7 @@ class JupyterWebRTCServer:
         
         @pc.on("datachannel")
         def on_datachannel(channel):
-            self.data_channels.add(channel)
+            self.data_channels[client_id] = channel
             print(f"Data channel added with ID: {client_id}")
             
             @channel.on("message")
@@ -142,7 +142,7 @@ class JupyterWebRTCServer:
             @channel.on("close")
             def on_close():
                 print(f"Client disconnected with ID: {client_id}")
-                self.data_channels.remove(channel)
+                self.data_channels.pop(client_id)
                 if pc in self.peer_connections:
                     self.peer_connections.remove(pc)
                 asyncio.create_task(
@@ -283,7 +283,7 @@ class JupyterWebRTCServer:
             message_str = json.dumps(message)
             tasks = [
                 async_send(channel, message_str)
-                for channel in self.data_channels
+                for c_id, channel in self.data_channels if c_id != client_id
             ]
             if tasks:
                 await asyncio.gather(*tasks)
