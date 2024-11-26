@@ -11,8 +11,12 @@ import logging
 
 print("bash test")
 
-turn_server_address = os.environ.get('TURN_ADDRESS', f"0.0.0.0:{os.environ.get('VAST_UDP_PORT_70001')}?transport=udp")
-turn_client_address = os.environ.get('TURN_ADDRESS', f"{os.environ.get('PUBLIC_IPADDR')}:{os.environ.get('VAST_UDP_PORT_70001')}?transport=udp")
+isLocal = os.environ.get('IS_LOCAL', 'false') == 'true'
+
+print("isLocal", isLocal)
+
+turn_server_address = os.environ.get('TURN_ADDRESS', f"0.0.0.0:{os.environ.get('VAST_UDP_PORT_70001'),6000}?transport=udp")
+turn_client_address = os.environ.get('TURN_ADDRESS', f"{os.environ.get('PUBLIC_IPADDR')}:{os.environ.get('VAST_UDP_PORT_70001'),6000}?transport=udp")
 turn_username = os.environ.get('TURN_USERNAME', 'user')
 turn_password = os.environ.get('TURN_PASSWORD', 'password')
 
@@ -22,7 +26,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("webrtc")
 
-RTC_CONFIG = RTCConfiguration([
+if isLocal:
+    RTC_CONFIG = RTCConfiguration([
+            RTCIceServer(urls="stun:stun.l.google.com:19302")
+        ])
+else:
+    RTC_CONFIG = RTCConfiguration([
             RTCIceServer(urls="stun:stun.l.google.com:19302"),
             RTCIceServer(
                 urls=f"turn:{turn_server_address}",
@@ -283,7 +292,7 @@ class JupyterWebRTCServer:
             message_str = json.dumps(message)
             tasks = [
                 async_send(channel, message_str)
-                for c_id, channel in self.data_channels if c_id != client_id
+                for channel_id, channel in self.data_channels.items() if channel_id != client_id
             ]
             if tasks:
                 await asyncio.gather(*tasks)
@@ -307,9 +316,9 @@ async def main():
     
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get('VAST_TCP_PORT_70000', 70000)))
+    site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get('VAST_TCP_PORT_70000', 8765)))
     
-    print(f"Server started at http://0.0.0.0:{os.environ.get('VAST_TCP_PORT_70000', 70000)}")
+    print(f"Server started at http://0.0.0.0:{os.environ.get('VAST_TCP_PORT_70000', 8765)}")
     await site.start()
     await asyncio.Future()  # run forever
 
