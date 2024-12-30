@@ -1,2 +1,2 @@
 export IS_LOCAL="true"
-python3 -u server.py
+python -u server.py
