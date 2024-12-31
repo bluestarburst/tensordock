@@ -52,4 +52,3 @@ wcwidth==0.2.13
 websockets==13.1
 wheel==0.44.0
 yarl==1.17.1
-logging
