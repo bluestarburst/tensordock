@@ -51,7 +51,7 @@ class JupyterWebRTCServer:
         self.kc = self.kernel_manager.client()
         self.kc.start_channels()
         
-        asyncio.create_task(self.execute_code('print("Hello World!")', '1'))
+        asyncio.create_task(self.execute_code('print("Hello World!")', '1', True))
         
         self.action_queue = asyncio.Queue()
         self.is_working = False
@@ -63,6 +63,7 @@ class JupyterWebRTCServer:
         
         self.interrupt_flag = False
         self.request_input = False
+        self.stuck_loop_count = 0
         
         # start worker thread
         asyncio.create_task(self.worker())
@@ -77,8 +78,12 @@ class JupyterWebRTCServer:
                 if self.is_working and self.kernel_state == 'idle':
                     stuck = True
                     print("Kernel might be stuck")
-                    stuck = True
-                    print("Kernel might be stuck")
+                    self.stuck_loop_count += 1
+                    
+                    # if self.stuck_loop_count > 2:
+                    #     print("Kernel is stuck")
+                    #     self.restart_kernel()
+                    #     self.stuck_loop_count = 0
             time.sleep(1)
 
     async def worker(self):
@@ -94,6 +99,17 @@ class JupyterWebRTCServer:
                 }})
                 await self.execute_code(action['code'], action['cell_id'])
             self.action_queue.task_done()
+
+    async def restart_kernel(self):
+        self.kernel_manager.interrupt_kernel()
+        self.kernel_manager.restart_kernel()
+        self.kernel_state = 'idle'
+        self.is_working = False
+        self.kc = self.kernel_manager.client()
+        self.kc.start_channels()
+        # asyncio.create_task(self.execute_code('print("Hello World!")', '1', True))
+        print("Restarted kernel")
+        return "Kernel restarted"
 
     async def handle_client(self, offer):
         
@@ -124,13 +140,8 @@ class JupyterWebRTCServer:
                 elif data['action'] == 'execute_code':
                     await self.action_queue.put(data)
                 elif data['action'] == 'restart_kernel':
-                    self.kernel_manager.restart_kernel()
-                    self.kernel_state = 'idle'
-                    self.is_working = False
-                    self.kc = self.kernel_manager.client()
-                    self.kc.start_channels()
-                    asyncio.create_task(self.execute_code('print("Hello World!")', '1'))
-                    print("Restarted kernel")
+                    # self.restart_kernel()
+                    asyncio.create_task(self.restart_kernel())
                     await self.broadcast({'action': 'kernel_restarted'})
                 elif data['action'] == 'canvas_data':
                     tmp = data['data']
@@ -173,20 +184,22 @@ class JupyterWebRTCServer:
 
         return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
 
-    async def execute_code(self, code, cell_id):
-        await self.broadcast({'action': 'start_running_cell', 'cell_id': cell_id})
+    async def execute_code(self, code, cell_id, no_broadcast=False):
+        if not no_broadcast:
+            await self.broadcast({'action': 'start_running_cell', 'cell_id': cell_id})
         
         if self.is_working and self.kernel_state == 'idle':
             print(f"Kernel is stuck")
-            await self.broadcast({'action': 'execution_result', 'result': {
-                'outputs': [{
-                    'output_type': 'error',
-                    'ename': 'KernelStuckError',
-                    'evalue': 'Kernel is stuck',
-                    'traceback': []
-                }],
-                'cell_id': cell_id
-            }})
+            if not no_broadcast:
+                await self.broadcast({'action': 'execution_result', 'result': {
+                    'outputs': [{
+                        'output_type': 'error',
+                        'ename': 'KernelStuckError',
+                        'evalue': 'Kernel is stuck',
+                        'traceback': []
+                    }],
+                    'cell_id': cell_id
+                }})
             self.is_working = False
             self.kernel_state = 'idle'
             return
@@ -236,12 +249,13 @@ class JupyterWebRTCServer:
                         'name': msg['content']['name'],
                         'text': msg['content']['text']
                     })
-                    await self.broadcast({'action': 'execution_partial', 'output': {
-                        'output_type': 'stream',
-                        'name': msg['content']['name'],
-                        'text': msg['content']['text'],
-                        'cell_id': cell_id
-                    }})
+                    if not no_broadcast:
+                        await self.broadcast({'action': 'execution_partial', 'output': {
+                            'output_type': 'stream',
+                            'name': msg['content']['name'],
+                            'text': msg['content']['text'],
+                            'cell_id': cell_id
+                        }})
                 elif msg['msg_type'] == 'error':
                     print("Error\n", msg['content']['ename'], msg['content']['evalue'])
                     
@@ -251,14 +265,14 @@ class JupyterWebRTCServer:
                         'evalue': msg['content']['evalue'],
                         'traceback': msg['content']['traceback']
                     })
-                    
-                    await self.broadcast({'action': 'execution_partial', 'output': {
-                        'output_type': 'error',
-                        'ename': msg['content']['ename'],
-                        'evalue': msg['content']['evalue'],
-                        'traceback': msg['content']['traceback'],
-                        'cell_id': cell_id
-                    }})
+                    if not no_broadcast:
+                        await self.broadcast({'action': 'execution_partial', 'output': {
+                            'output_type': 'error',
+                            'ename': msg['content']['ename'],
+                            'evalue': msg['content']['evalue'],
+                            'traceback': msg['content']['traceback'],
+                            'cell_id': cell_id
+                        }})
                     
                 elif msg['msg_type'] == 'status' and msg['content']['execution_state'] == 'idle':
                     break
@@ -277,7 +291,8 @@ class JupyterWebRTCServer:
                 break
                 
         print("Broadcasting execution result")
-        await self.broadcast({'action': 'execution_result', 'result': result})
+        if not no_broadcast:
+            await self.broadcast({'action': 'execution_result', 'result': result})
 
         self.is_working = False
         return result
