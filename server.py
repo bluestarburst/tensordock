@@ -21,7 +21,7 @@ turn_username = os.environ.get('TURN_USERNAME', 'user')
 turn_password = os.environ.get('TURN_PASSWORD', 'password')
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.ERROR,
     format='%(asctime)s %(levelname)s %(message)s'
 )
 logger = logging.getLogger("webrtc")
@@ -132,7 +132,7 @@ class JupyterWebRTCServer:
             async def on_message(message):
                 
                 data = json.loads(message)
-                print(f"Received message: {data}")
+                # print(f"Received message: {data}")
                 if data['action'] == 'start_kernel':
                     kernel_id = self.kernel_manager.start_kernel()
                     print(f"Started kernel with ID: {kernel_id}")
@@ -144,6 +144,7 @@ class JupyterWebRTCServer:
                     asyncio.create_task(self.restart_kernel())
                     await self.broadcast({'action': 'kernel_restarted'})
                 elif data['action'] == 'canvas_data':
+                    print(f"Received canvas data of type {data['data']['type']}")
                     tmp = data['data']
                     tmp['id'] = str(client_id)
                     await self.broadcast({'action': 'canvas_data', 'data': tmp}, client_id)
@@ -300,7 +301,7 @@ class JupyterWebRTCServer:
     async def broadcast(self, message, client_id=None):
         
         async def async_send(channel, message):
-            print(f"Sending {message} to {channel}")
+            # print(f"Sending {message} to {channel}")
             channel.send(message)
         
         if self.data_channels:
