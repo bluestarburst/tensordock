@@ -43,6 +43,10 @@ else:
 print("RTC_CONFIG", RTC_CONFIG)
 
 class JupyterWebRTCServer:
+    
+    def trait_change(self, change):
+        print("Trait change", change)
+    
     def __init__(self):
         self.kernel_manager = KernelManager()
         self.peer_connections = set()
@@ -50,6 +54,10 @@ class JupyterWebRTCServer:
         self.kernel_manager.start_kernel()
         self.kc = self.kernel_manager.client()
         self.kc.start_channels()
+        
+        self.kc.wait_for_ready()
+        
+        self.kc.on_trait_change(self.trait_change, 'state')
         
         asyncio.create_task(self.execute_code('print("Hello World!")', '1', True))
         
@@ -67,24 +75,27 @@ class JupyterWebRTCServer:
         
         # start worker thread
         asyncio.create_task(self.worker())
+        # self.worker_thread = threading.Thread(target=self.worker, daemon=True)
+        # self.worker_thread.start()
         
         # start kernel checker
         threading.Thread(target=self.check_kernel, daemon=True).start()
 
     def check_kernel(self):
-        while True:
-            if self.is_working and self.kernel_state == 'idle':
-                time.sleep(5)
-                if self.is_working and self.kernel_state == 'idle':
-                    stuck = True
-                    print("Kernel might be stuck")
-                    self.stuck_loop_count += 1
+        print("Kernel checker started")
+        # while True:
+        #     if self.is_working and self.kernel_state == 'idle':
+        #         time.sleep(5)
+        #         if self.is_working and self.kernel_state == 'idle':
+        #             stuck = True
+        #             print("Kernel might be stuck")
+        #             self.stuck_loop_count += 1
                     
-                    # if self.stuck_loop_count > 2:
-                    #     print("Kernel is stuck")
-                    #     self.restart_kernel()
-                    #     self.stuck_loop_count = 0
-            time.sleep(1)
+        #             # if self.stuck_loop_count > 2:
+        #             #     print("Kernel is stuck")
+        #             #     self.restart_kernel()
+        #             #     self.stuck_loop_count = 0
+        #     time.sleep(1)
 
     async def worker(self):
         print("Worker started")
@@ -99,6 +110,7 @@ class JupyterWebRTCServer:
                 }})
                 await self.execute_code(action['code'], action['cell_id'])
             self.action_queue.task_done()
+            time.sleep(0.1)
 
     async def restart_kernel(self):
         self.kernel_manager.interrupt_kernel()
@@ -144,7 +156,7 @@ class JupyterWebRTCServer:
                     asyncio.create_task(self.restart_kernel())
                     await self.broadcast({'action': 'kernel_restarted'})
                 elif data['action'] == 'canvas_data':
-                    print(f"Received canvas data of type {data['data']['type']}")
+                    # print(f"Received canvas data of type {data['data']['type']}")
                     tmp = data['data']
                     tmp['id'] = str(client_id)
                     await self.broadcast({'action': 'canvas_data', 'data': tmp}, client_id)
@@ -172,6 +184,27 @@ class JupyterWebRTCServer:
                         client_id
                     )
                 )
+                
+        @pc.on("icecandidate")
+        async def on_ice_candidate(candidate):
+            # print(f"Received ICE candidate: {candidate}")
+            await self.broadcast({'action': 'ice_candidate', 'candidate': candidate}, client_id)
+            
+        @pc.on("icegatheringstatechange")
+        async def on_ice_gathering_state_change():
+            print(f"ICE gathering state is {pc.iceGatheringState}")
+            
+        @pc.on("signalingstatechange")
+        async def on_signaling_state_change():
+            print(f"Signaling state is {pc.signalingState}")
+            
+        @pc.on("connectionstatechange")
+        async def on_connection_state_change():
+            print(f"Connection state is {pc.connectionState}")
+            
+        @pc.on("negotiationneeded")
+        async def on_negotiation_needed():
+            print("Negotiation needed")
 
         # Set the remote description from the offer
         await pc.setRemoteDescription(RTCSessionDescription(
@@ -214,7 +247,8 @@ class JupyterWebRTCServer:
             try:
                 await asyncio.sleep(0.1)
                 
-                msg = await asyncio.wait_for(self.kc._async_get_iopub_msg(), timeout=10)
+                msg = await asyncio.wait_for(self.kc._async_get_iopub_msg(), timeout=3)
+                print("Message", msg is not None)
                 
                 try:
                     stdin_msg = self.kc.stdin_channel.get_msg(timeout=0.1)
