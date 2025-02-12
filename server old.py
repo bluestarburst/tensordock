@@ -1,5 +1,7 @@
 import asyncio
 import json
+from jupyter_client import KernelManager
+from jupyter_client.multikernelmanager import MultiKernelManager
 import threading
 import time
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer, RTCDtlsTransport
@@ -46,7 +48,16 @@ class JupyterWebRTCServer:
         print("Trait change", change)
     
     def __init__(self):
+        self.kernel_manager = KernelManager()
+        self.peer_connections = set()
+        self.data_channels = {}
+        self.kernel_manager.start_kernel()
+        self.kc = self.kernel_manager.client()
+        self.kc.start_channels()
         
+        self.kc.wait_for_ready()
+        
+        self.kc.on_trait_change(self.trait_change, 'state')
         
         asyncio.create_task(self.execute_code('print("Hello World!")', '1', True))
         
@@ -102,128 +113,15 @@ class JupyterWebRTCServer:
             time.sleep(0.1)
 
     async def restart_kernel(self):
+        self.kernel_manager.interrupt_kernel()
+        self.kernel_manager.restart_kernel()
+        self.kernel_state = 'idle'
+        self.is_working = False
+        self.kc = self.kernel_manager.client()
+        self.kc.start_channels()
         # asyncio.create_task(self.execute_code('print("Hello World!")', '1', True))
         print("Restarted kernel")
         return "Kernel restarted"
-
-    
-
-    async def execute_code(self, code, cell_id, no_broadcast=False):
-        # if not no_broadcast:
-        #     await self.broadcast({'action': 'start_running_cell', 'cell_id': cell_id})
-        
-        # if self.is_working and self.kernel_state == 'idle':
-        #     print(f"Kernel is stuck")
-        #     if not no_broadcast:
-        #         await self.broadcast({'action': 'execution_result', 'result': {
-        #             'outputs': [{
-        #                 'output_type': 'error',
-        #                 'ename': 'KernelStuckError',
-        #                 'evalue': 'Kernel is stuck',
-        #                 'traceback': []
-        #             }],
-        #             'cell_id': cell_id
-        #         }})
-        #     self.is_working = False
-        #     self.kernel_state = 'idle'
-        #     return
-        
-        # self.is_working = True
-        # self.kc.execute(code, allow_stdin=True)
-        # result = {'outputs': [], 'cell_id': cell_id}
-
-        # print("Executing code")
-        # while True:
-        #     try:
-        #         await asyncio.sleep(0.1)
-                
-        #         msg = await asyncio.wait_for(self.kc._async_get_iopub_msg(), timeout=3)
-        #         print("Message", msg is not None)
-                
-        #         try:
-        #             stdin_msg = self.kc.stdin_channel.get_msg(timeout=0.1)
-        #             print("Stdin message", stdin_msg)
-                    
-        #             if stdin_msg and stdin_msg['msg_type'] == 'input_request':
-        #                 print("Input requested")
-        #                 self.request_input = True
-        #                 await self.broadcast({
-        #                     'action': 'request_input',
-        #                     'prompt': stdin_msg['content']['prompt'],
-        #                     'cell_id': cell_id
-        #                 })
-        #                 print("Waiting for input")
-        #                 self.kc.input(await self.input_queue.get())
-        #                 while not self.input_queue.empty():
-        #                     await self.input_queue.get()
-        #         except asyncio.TimeoutError:
-        #             print("No input")    
-        #         except Exception:
-        #             self.request_input = False
-                
-        #         self.request_input = False
-            
-        #         if msg['msg_type'] == 'execute_result':
-        #             result['outputs'].append({
-        #                 'output_type': 'execute_result',
-        #                 'data': msg['content']['data']
-        #             })
-        #         elif msg['msg_type'] == 'stream':
-        #             result['outputs'].append({
-        #                 'output_type': 'stream',
-        #                 'name': msg['content']['name'],
-        #                 'text': msg['content']['text']
-        #             })
-        #             if not no_broadcast:
-        #                 await self.broadcast({'action': 'execution_partial', 'output': {
-        #                     'output_type': 'stream',
-        #                     'name': msg['content']['name'],
-        #                     'text': msg['content']['text'],
-        #                     'cell_id': cell_id
-        #                 }})
-        #         elif msg['msg_type'] == 'error':
-        #             print("Error\n", msg['content']['ename'], msg['content']['evalue'])
-                    
-        #             result['outputs'].append({
-        #                 'output_type': 'error',
-        #                 'ename': msg['content']['ename'],
-        #                 'evalue': msg['content']['evalue'],
-        #                 'traceback': msg['content']['traceback']
-        #             })
-        #             if not no_broadcast:
-        #                 await self.broadcast({'action': 'execution_partial', 'output': {
-        #                     'output_type': 'error',
-        #                     'ename': msg['content']['ename'],
-        #                     'evalue': msg['content']['evalue'],
-        #                     'traceback': msg['content']['traceback'],
-        #                     'cell_id': cell_id
-        #                 }})
-                    
-        #         elif msg['msg_type'] == 'status' and msg['content']['execution_state'] == 'idle':
-        #             break
-                    
-        #         if 'content' in msg and 'execution_state' in msg['content'] and msg['content']['execution_state'] == 'idle':
-        #             print("Execution done")
-        #             break
-        #     except asyncio.TimeoutError:
-        #         print("Execution timed out")
-        #         result['outputs'].append({
-        #             'output_type': 'error',
-        #             'ename': 'TimeoutError',
-        #             'evalue': 'Execution timed out',
-        #             'traceback': []
-        #         })
-        #         break
-                
-        # print("Broadcasting execution result")
-        # if not no_broadcast:
-        #     await self.broadcast({'action': 'execution_result', 'result': result})
-
-        # self.is_working = False
-        # return result
-        
-        print("Executing code")
-        
 
     async def handle_client(self, offer):
         
@@ -319,6 +217,120 @@ class JupyterWebRTCServer:
         await pc.setLocalDescription(answer)
 
         return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+
+    async def execute_code(self, code, cell_id, no_broadcast=False):
+        if not no_broadcast:
+            await self.broadcast({'action': 'start_running_cell', 'cell_id': cell_id})
+        
+        if self.is_working and self.kernel_state == 'idle':
+            print(f"Kernel is stuck")
+            if not no_broadcast:
+                await self.broadcast({'action': 'execution_result', 'result': {
+                    'outputs': [{
+                        'output_type': 'error',
+                        'ename': 'KernelStuckError',
+                        'evalue': 'Kernel is stuck',
+                        'traceback': []
+                    }],
+                    'cell_id': cell_id
+                }})
+            self.is_working = False
+            self.kernel_state = 'idle'
+            return
+        
+        self.is_working = True
+        self.kc.execute(code, allow_stdin=True)
+        result = {'outputs': [], 'cell_id': cell_id}
+
+        print("Executing code")
+        while True:
+            try:
+                await asyncio.sleep(0.1)
+                
+                msg = await asyncio.wait_for(self.kc._async_get_iopub_msg(), timeout=3)
+                print("Message", msg is not None)
+                
+                try:
+                    stdin_msg = self.kc.stdin_channel.get_msg(timeout=0.1)
+                    print("Stdin message", stdin_msg)
+                    
+                    if stdin_msg and stdin_msg['msg_type'] == 'input_request':
+                        print("Input requested")
+                        self.request_input = True
+                        await self.broadcast({
+                            'action': 'request_input',
+                            'prompt': stdin_msg['content']['prompt'],
+                            'cell_id': cell_id
+                        })
+                        print("Waiting for input")
+                        self.kc.input(await self.input_queue.get())
+                        while not self.input_queue.empty():
+                            await self.input_queue.get()
+                except asyncio.TimeoutError:
+                    print("No input")    
+                except Exception:
+                    self.request_input = False
+                
+                self.request_input = False
+            
+                if msg['msg_type'] == 'execute_result':
+                    result['outputs'].append({
+                        'output_type': 'execute_result',
+                        'data': msg['content']['data']
+                    })
+                elif msg['msg_type'] == 'stream':
+                    result['outputs'].append({
+                        'output_type': 'stream',
+                        'name': msg['content']['name'],
+                        'text': msg['content']['text']
+                    })
+                    if not no_broadcast:
+                        await self.broadcast({'action': 'execution_partial', 'output': {
+                            'output_type': 'stream',
+                            'name': msg['content']['name'],
+                            'text': msg['content']['text'],
+                            'cell_id': cell_id
+                        }})
+                elif msg['msg_type'] == 'error':
+                    print("Error\n", msg['content']['ename'], msg['content']['evalue'])
+                    
+                    result['outputs'].append({
+                        'output_type': 'error',
+                        'ename': msg['content']['ename'],
+                        'evalue': msg['content']['evalue'],
+                        'traceback': msg['content']['traceback']
+                    })
+                    if not no_broadcast:
+                        await self.broadcast({'action': 'execution_partial', 'output': {
+                            'output_type': 'error',
+                            'ename': msg['content']['ename'],
+                            'evalue': msg['content']['evalue'],
+                            'traceback': msg['content']['traceback'],
+                            'cell_id': cell_id
+                        }})
+                    
+                elif msg['msg_type'] == 'status' and msg['content']['execution_state'] == 'idle':
+                    break
+                    
+                if 'content' in msg and 'execution_state' in msg['content'] and msg['content']['execution_state'] == 'idle':
+                    print("Execution done")
+                    break
+            except asyncio.TimeoutError:
+                print("Execution timed out")
+                result['outputs'].append({
+                    'output_type': 'error',
+                    'ename': 'TimeoutError',
+                    'evalue': 'Execution timed out',
+                    'traceback': []
+                })
+                break
+                
+        print("Broadcasting execution result")
+        if not no_broadcast:
+            await self.broadcast({'action': 'execution_result', 'result': result})
+
+        self.is_working = False
+        return result
 
     async def broadcast(self, message, client_id=None):
         
