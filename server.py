@@ -2,10 +2,14 @@ import asyncio
 import json
 import threading
 import time
-from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer, RTCDtlsTransport
+import uuid
+import datetime
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration, RTCIceServer
 from aiortc.contrib.signaling import object_from_string, object_to_string
 import os
 import logging
+from pprint import pprint
+from websockets.client import connect
 
 print("bash test")
 
@@ -14,7 +18,7 @@ isLocal = os.environ.get('IS_LOCAL', 'false') == 'true'
 print("isLocal", isLocal)
 
 turn_server_address = os.environ.get('TURN_ADDRESS', f"0.0.0.0:{os.environ.get('VAST_UDP_PORT_70001',6000)}?transport=udp")
-turn_client_address = os.environ.get('TURN_ADDRESS', f"{os.environ.get('PUBLIC_IPADDR', "0.0.0.0")}:{os.environ.get('VAST_UDP_PORT_70001',6000)}?transport=udp")
+turn_client_address = os.environ.get('TURN_ADDRESS', f"{os.environ.get('PUBLIC_IPADDR', '0.0.0.0')}:{os.environ.get('VAST_UDP_PORT_70001',6000)}?transport=udp")
 turn_username = os.environ.get('TURN_USERNAME', 'user')
 turn_password = os.environ.get('TURN_PASSWORD', 'password')
 
@@ -42,191 +46,217 @@ print("RTC_CONFIG", RTC_CONFIG)
 
 class JupyterWebRTCServer:
     
-    def trait_change(self, change):
-        print("Trait change", change)
-    
     def __init__(self):
-        
-        
-        asyncio.create_task(self.execute_code('print("Hello World!")', '1', True))
+        self.peer_connections = set()
+        self.data_channels = {}
+        self.session = uuid.uuid1().hex
+        self.kernel_id = None
+        self.kernel_ws = None
         
         self.action_queue = asyncio.Queue()
-        self.is_working = False
-        self.kernel_state = 'idle'
-        self.worker_thread = None
-        
         self.input_queue = asyncio.Queue()
-        self.last_input = None
+        self.response_queue = asyncio.Queue()
         
         self.interrupt_flag = False
         self.request_input = False
-        self.stuck_loop_count = 0
         
-        # start worker thread
+        # Start worker thread
         asyncio.create_task(self.worker())
-        # self.worker_thread = threading.Thread(target=self.worker, daemon=True)
-        # self.worker_thread.start()
         
-        # start kernel checker
+        # Start kernel checker
         threading.Thread(target=self.check_kernel, daemon=True).start()
 
     def check_kernel(self):
         print("Kernel checker started")
-        # while True:
-        #     if self.is_working and self.kernel_state == 'idle':
-        #         time.sleep(5)
-        #         if self.is_working and self.kernel_state == 'idle':
-        #             stuck = True
-        #             print("Kernel might be stuck")
-        #             self.stuck_loop_count += 1
+
+    async def connect_to_jupyter(self):
+        base_url = os.environ.get('JUPYTER_URL', 'http://localhost:8888')
+        token = os.environ.get('JUPYTER_TOKEN', 'test')
+        
+        import requests
+        headers = {'Authorization': f'Token {token}'}
+        
+        # Create kernel
+        url = f"{base_url}/api/kernels"
+        response = requests.post(url, headers=headers)
+        kernel_info = json.loads(response.text)
+        self.kernel_id = kernel_info['id']
+        
+        # Connect to WebSocket
+        ws_url = f"ws://{base_url.split('://')[-1]}/api/kernels/{self.kernel_id}/channels"
+        self.kernel_ws = await connect(ws_url, extra_headers=headers)
+        
+        # Start message listener
+        asyncio.create_task(self.listen_for_messages())
+        
+        return self.kernel_id
+
+    async def listen_for_messages(self):
+        if not self.kernel_ws:
+            print("WebSocket not connected")
+            return
+        
+        while True:
+            try:
+                message = await self.kernel_ws.recv()
+                msg = json.loads(message)
+                
+                pprint(msg.get('msg_type'))
+                pprint(msg.get('content'))
+                
+                if msg.get('msg_type') == 'status':
+                    if msg['content'].get('execution_state') == 'idle':
+                        self.kernel_state = 'idle'
+                    elif msg['content'].get('execution_state') == 'busy':
+                        self.kernel_state = 'busy'
+                        
+                # broadcast the message to all clients
+                await self.broadcast({
+                    'action': 'kernel_message',
+                    'data': msg,
+                    'cell_id': msg.get('parent_header', {}).get('msg_id', '') 
+                })
+                
+                if msg.get('msg_type') == 'input_request':
+                    self.request_input = True
+                    await self.broadcast({
+                        'action': 'input_request',
+                        'prompt': msg['content'].get('prompt', 'Input:'),
+                        'cell_id': msg.get('parent_header', {}).get('msg_id', '')
+                    })
                     
-        #             # if self.stuck_loop_count > 2:
-        #             #     print("Kernel is stuck")
-        #             #     self.restart_kernel()
-        #             #     self.stuck_loop_count = 0
-        #     time.sleep(1)
+                    # Wait for input from client
+                    input_value = await self.input_queue.get()
+                    await self.send_input_reply(msg.get('header', {}), input_value)
+                    self.request_input = False
+                    
+                
+                # Store the message in response queue
+                await self.response_queue.put(msg)
+                
+            except Exception as e:
+                print(f"Error in message listener: {e}")
+                await asyncio.sleep(0.1)
+
+    async def send_execute_request(self, code, cell_id):
+        if not self.kernel_ws:
+            await self.connect_to_jupyter()
+        
+        msg_id = cell_id or uuid.uuid1().hex
+        msg_type = 'execute_request'
+        content = {
+            'code': code,
+            'silent': False,
+            'store_history': True,
+            'user_expressions': {},
+            'allow_stdin': True,
+            'stop_on_error': True
+        }
+        
+        hdr = {
+            'msg_id': msg_id,
+            'username': 'user',
+            'session': self.session,
+            'date': datetime.datetime.now().isoformat(),
+            'msg_type': msg_type,
+            'version': '5.0'
+        }
+        
+        msg = {
+            'header': hdr,
+            'parent_header': {},
+            'metadata': {},
+            'content': content,
+            'channel': 'shell'
+        }
+        
+        await self.kernel_ws.send(json.dumps(msg))
+        return msg_id
+
+    async def send_input_reply(self, parent_header, value):
+        if not self.kernel_ws:
+            return
+        
+        msg_type = 'input_reply'
+        content = {'value': value}
+        
+        hdr = {
+            'msg_id': uuid.uuid1().hex,
+            'username': 'user',
+            'session': self.session,
+            'date': datetime.datetime.now().isoformat(),
+            'msg_type': msg_type,
+            'version': '5.0'
+        }
+        
+        msg = {
+            'header': hdr,
+            'parent_header': parent_header,
+            'metadata': {},
+            'content': content,
+            'channel': 'stdin'
+        }
+        
+        await self.kernel_ws.send(json.dumps(msg))
 
     async def worker(self):
         print("Worker started")
         while True:
             action = await self.action_queue.get()
-            if action['action'] == 'execute_code':
-                await self.broadcast({'action': 'execution_partial', 'output': {
-                    'output_type': 'stream',
-                    'name': 'stdout',
-                    'text': '',
-                    'cell_id': action['cell_id']
-                }})
-                await self.execute_code(action['code'], action['cell_id'])
+            try:
+                if action['action'] == 'execute_code':
+                    await self.broadcast({
+                        'action': 'execution_partial',
+                        'output': {
+                            'output_type': 'stream',
+                            'name': 'stdout',
+                            'text': '',
+                            'cell_id': action['cell_id']
+                        }
+                    })
+                    await self.execute_code(action['code'], action['cell_id'])
+            except Exception as e:
+                print(f"Error in worker: {e}")
             self.action_queue.task_done()
-            time.sleep(0.1)
+            await asyncio.sleep(0.1)
 
     async def restart_kernel(self):
-        # asyncio.create_task(self.execute_code('print("Hello World!")', '1', True))
+        if self.kernel_ws:
+            await self.kernel_ws.close()
+        
+        self.kernel_id = None
+        self.kernel_ws = None
+        await self.connect_to_jupyter()
+        
         print("Restarted kernel")
         return "Kernel restarted"
 
-    
-
     async def execute_code(self, code, cell_id, no_broadcast=False):
-        # if not no_broadcast:
-        #     await self.broadcast({'action': 'start_running_cell', 'cell_id': cell_id})
-        
-        # if self.is_working and self.kernel_state == 'idle':
-        #     print(f"Kernel is stuck")
-        #     if not no_broadcast:
-        #         await self.broadcast({'action': 'execution_result', 'result': {
-        #             'outputs': [{
-        #                 'output_type': 'error',
-        #                 'ename': 'KernelStuckError',
-        #                 'evalue': 'Kernel is stuck',
-        #                 'traceback': []
-        #             }],
-        #             'cell_id': cell_id
-        #         }})
-        #     self.is_working = False
-        #     self.kernel_state = 'idle'
-        #     return
-        
-        # self.is_working = True
-        # self.kc.execute(code, allow_stdin=True)
-        # result = {'outputs': [], 'cell_id': cell_id}
-
-        # print("Executing code")
-        # while True:
-        #     try:
-        #         await asyncio.sleep(0.1)
-                
-        #         msg = await asyncio.wait_for(self.kc._async_get_iopub_msg(), timeout=3)
-        #         print("Message", msg is not None)
-                
-        #         try:
-        #             stdin_msg = self.kc.stdin_channel.get_msg(timeout=0.1)
-        #             print("Stdin message", stdin_msg)
-                    
-        #             if stdin_msg and stdin_msg['msg_type'] == 'input_request':
-        #                 print("Input requested")
-        #                 self.request_input = True
-        #                 await self.broadcast({
-        #                     'action': 'request_input',
-        #                     'prompt': stdin_msg['content']['prompt'],
-        #                     'cell_id': cell_id
-        #                 })
-        #                 print("Waiting for input")
-        #                 self.kc.input(await self.input_queue.get())
-        #                 while not self.input_queue.empty():
-        #                     await self.input_queue.get()
-        #         except asyncio.TimeoutError:
-        #             print("No input")    
-        #         except Exception:
-        #             self.request_input = False
-                
-        #         self.request_input = False
-            
-        #         if msg['msg_type'] == 'execute_result':
-        #             result['outputs'].append({
-        #                 'output_type': 'execute_result',
-        #                 'data': msg['content']['data']
-        #             })
-        #         elif msg['msg_type'] == 'stream':
-        #             result['outputs'].append({
-        #                 'output_type': 'stream',
-        #                 'name': msg['content']['name'],
-        #                 'text': msg['content']['text']
-        #             })
-        #             if not no_broadcast:
-        #                 await self.broadcast({'action': 'execution_partial', 'output': {
-        #                     'output_type': 'stream',
-        #                     'name': msg['content']['name'],
-        #                     'text': msg['content']['text'],
-        #                     'cell_id': cell_id
-        #                 }})
-        #         elif msg['msg_type'] == 'error':
-        #             print("Error\n", msg['content']['ename'], msg['content']['evalue'])
-                    
-        #             result['outputs'].append({
-        #                 'output_type': 'error',
-        #                 'ename': msg['content']['ename'],
-        #                 'evalue': msg['content']['evalue'],
-        #                 'traceback': msg['content']['traceback']
-        #             })
-        #             if not no_broadcast:
-        #                 await self.broadcast({'action': 'execution_partial', 'output': {
-        #                     'output_type': 'error',
-        #                     'ename': msg['content']['ename'],
-        #                     'evalue': msg['content']['evalue'],
-        #                     'traceback': msg['content']['traceback'],
-        #                     'cell_id': cell_id
-        #                 }})
-                    
-        #         elif msg['msg_type'] == 'status' and msg['content']['execution_state'] == 'idle':
-        #             break
-                    
-        #         if 'content' in msg and 'execution_state' in msg['content'] and msg['content']['execution_state'] == 'idle':
-        #             print("Execution done")
-        #             break
-        #     except asyncio.TimeoutError:
-        #         print("Execution timed out")
-        #         result['outputs'].append({
-        #             'output_type': 'error',
-        #             'ename': 'TimeoutError',
-        #             'evalue': 'Execution timed out',
-        #             'traceback': []
-        #         })
-        #         break
-                
-        # print("Broadcasting execution result")
-        # if not no_broadcast:
-        #     await self.broadcast({'action': 'execution_result', 'result': result})
-
-        # self.is_working = False
-        # return result
-        
         print("Executing code")
+        if not self.kernel_ws:
+            await self.connect_to_jupyter()
         
+        msg_id = await self.send_execute_request(code, cell_id)
+        
+        # Wait for execution to complete
+        execution_count = None
+        while True:
+            if not self.response_queue.empty():
+                msg = await self.response_queue.get()
+                if (msg.get('parent_header', {}).get('msg_id') == msg_id and 
+                    msg.get('msg_type') == 'execute_reply'):
+                    execution_count = msg['content'].get('execution_count')
+                    break
+            await asyncio.sleep(0.1)
+        
+        if not no_broadcast:
+            await self.broadcast({
+                'action': 'execution_complete',
+                'cell_id': cell_id,
+                'execution_count': execution_count
+            })
 
     async def handle_client(self, offer):
-        
         print("Handling client")
         
         pc = RTCPeerConnection(configuration=RTC_CONFIG)
@@ -246,19 +276,16 @@ class JupyterWebRTCServer:
             async def on_message(message):
                 
                 data = json.loads(message)
-                # print(f"Received message: {data}")
                 if data['action'] == 'start_kernel':
-                    kernel_id = self.kernel_manager.start_kernel()
+                    kernel_id = await self.connect_to_jupyter()
                     print(f"Started kernel with ID: {kernel_id}")
                     await self.broadcast({'action': 'kernel_started', 'kernel_id': kernel_id})
                 elif data['action'] == 'execute_code':
                     await self.action_queue.put(data)
                 elif data['action'] == 'restart_kernel':
-                    # self.restart_kernel()
                     asyncio.create_task(self.restart_kernel())
                     await self.broadcast({'action': 'kernel_restarted'})
                 elif data['action'] == 'canvas_data':
-                    # print(f"Received canvas data of type {data['data']['type']}")
                     tmp = data['data']
                     tmp['id'] = str(client_id)
                     await self.broadcast({'action': 'canvas_data', 'data': tmp}, client_id)
@@ -267,10 +294,11 @@ class JupyterWebRTCServer:
                     await self.input_queue.put(data['input'])
                 elif data['action'] == 'interrupt_kernel':
                     print("Interrupting kernel")
-                    self.kernel_manager.interrupt_kernel()
                     if self.request_input:
-                        self.input_queue.put_nowait('')
+                        await self.input_queue.put('')
                     self.interrupt_flag = True
+                    # Send an interrupt request over the Jupyter messaging protocol
+                    # This would typically be a separate request in the Jupyter API
                 else:
                     print(f"Unknown action: {data['action']}")
 
@@ -289,7 +317,6 @@ class JupyterWebRTCServer:
                 
         @pc.on("icecandidate")
         async def on_ice_candidate(candidate):
-            # print(f"Received ICE candidate: {candidate}")
             await self.broadcast({'action': 'ice_candidate', 'candidate': candidate}, client_id)
             
         @pc.on("icegatheringstatechange")
@@ -321,9 +348,7 @@ class JupyterWebRTCServer:
         return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
 
     async def broadcast(self, message, client_id=None):
-        
         async def async_send(channel, message):
-            # print(f"Sending {message} to {channel}")
             channel.send(message)
         
         if self.data_channels:
@@ -342,7 +367,7 @@ async def main():
     server = JupyterWebRTCServer()
     
     async def handle_offer(request):
-        params = await request.json() # the json is { "type": "offer", "offer": "<sdp>" }
+        params = await request.json()
         response = await server.handle_client(params)
         return web.Response(
             content_type="application/json",

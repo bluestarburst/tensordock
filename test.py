@@ -49,7 +49,8 @@ def send_input_reply(parent_hdr, value):
         'version' : '5.0' }
     msg = { 'header': hdr, 'parent_header': parent_hdr, 
         'metadata': {},
-        'content': content }
+        'content': content,
+        'channel': 'stdin' }
     return msg
 
 # create an asyncronous thread for receiving messages
@@ -57,17 +58,19 @@ def send_input_reply(parent_hdr, value):
 working = True
 
 def receive():
+    
     while True:
         msg = ws.recv()
         msg = json.loads(msg)
+        print("\n\n\n\n\n\n\n\n")
+        pprint(msg)
         
         if msg['msg_type'] == 'status':
             pprint("status")
         elif msg['msg_type'] == 'input_request':
             pprint("input_request")
-            pprint(msg)
             # send a temporary response
-            ws.send(json.dumps(send_input_reply(msg['header'], "hello")))
+            ws.send(json.dumps(send_input_reply(msg['parent_header'], "hello")))
         else:
             print("other")
             
