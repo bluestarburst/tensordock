@@ -9,6 +9,7 @@ from aiortc.contrib.signaling import object_from_string, object_to_string
 import os
 import logging
 from pprint import pprint
+import requests
 from websockets.client import connect
 
 print("bash test")
@@ -60,6 +61,11 @@ class JupyterWebRTCServer:
         self.interrupt_flag = False
         self.request_input = False
         
+        # Widget state tracking
+        self.widget_states = {}
+        self.widget_models = {}
+        self.comm_managers = {}
+        
         # Start worker thread
         asyncio.create_task(self.worker())
         
@@ -73,7 +79,7 @@ class JupyterWebRTCServer:
         base_url = os.environ.get('JUPYTER_URL', 'http://localhost:8888')
         token = os.environ.get('JUPYTER_TOKEN', 'test')
         
-        import requests
+        
         headers = {'Authorization': f'Token {token}'}
         
         # Create kernel
@@ -109,21 +115,70 @@ class JupyterWebRTCServer:
                         self.kernel_state = 'idle'
                     elif msg['content'].get('execution_state') == 'busy':
                         self.kernel_state = 'busy'
+                
+                # Handle widget comm messages
+                if msg.get('msg_type') == 'comm_open':
+                    comm_id = msg['content'].get('comm_id')
+                    if comm_id:
+                        # Extract widget data from the message
+                        widget_data = msg['content'].get('data', {})
+                        state = widget_data.get('state', {})
+                        model_module = state.get('_model_module')
+                        model_name = state.get('_model_name')
+                        view_module = state.get('_view_module')
+                        view_name = state.get('_view_name')
                         
+                        # Store widget state and model info
+                        self.widget_states[comm_id] = {
+                            'state': state,
+                            'model': {
+                                'model_name': model_name,
+                                'model_module': model_module,
+                                'view_name': view_name,
+                                'view_module': view_module
+                            },
+                            'visible': True
+                        }
+                
+                elif msg.get('msg_type') == 'comm_msg':
+                    comm_id = msg['content'].get('comm_id')
+                    if comm_id in self.widget_states:
+                        # Update widget state
+                        new_state = msg['content'].get('data', {}).get('state', {})
+                        self.widget_states[comm_id]['state'].update(new_state)
+                
+                # Handle display data messages
+                elif msg.get('msg_type') == 'display_data':
+                    display_data = msg['content'].get('data', {})
+                    cell_id = msg.get('parent_header', {}).get('msg_id', '')
+                    
+                    # Handle widget views
+                    if 'application/vnd.jupyter.widget-view+json' in display_data:
+                        widget_data = display_data['application/vnd.jupyter.widget-view+json']
+                        model_id = widget_data['model_id']
+                        
+                        # Add widget to cell's output if it exists
+                        if model_id in self.widget_states:
+                            await self.broadcast({
+                                'action': 'kernel_message',
+                                'data': msg,
+                                'cell_id': cell_id,
+                                'widgets': {
+                                    model_id: self.widget_states[model_id]
+                                }
+                            })
+                            continue
+
                 # broadcast the message to all clients
                 await self.broadcast({
                     'action': 'kernel_message',
                     'data': msg,
-                    'cell_id': msg.get('parent_header', {}).get('msg_id', '') 
+                    'cell_id': msg.get('parent_header', {}).get('msg_id', ''),
+                    'widget_state': self.widget_states.get(msg['content'].get('comm_id')) if msg.get('msg_type') in ['comm_open', 'comm_msg'] else None
                 })
                 
                 if msg.get('msg_type') == 'input_request':
                     self.request_input = True
-                    await self.broadcast({
-                        'action': 'input_request',
-                        'prompt': msg['content'].get('prompt', 'Input:'),
-                        'cell_id': msg.get('parent_header', {}).get('msg_id', '')
-                    })
                     
                     # Wait for input from client
                     input_value = await self.input_queue.get()

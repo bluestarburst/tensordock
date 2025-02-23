@@ -14,7 +14,8 @@ turnserver \
         -p "${VAST_UDP_PORT_70001}" \
         -X "${PUBLIC_IPADDR}" 2>&1 | tee /var/log/coturn.log &
 
-# run jupyter gateway
-jupyter kernelgateway --KernelGatewayApp.api=kernel_gateway.jupyter_websocket --port=10100
+# run jupyter server in the background
+jupyter server &
 
+# run tensordock in the foreground
 nohup python3 -u server.py > server.log 2>&1 &
