@@ -102,96 +102,113 @@ class JupyterWebRTCServer:
             print("WebSocket not connected")
             return
         
+        message_queue = asyncio.Queue()
+        
+        async def message_consumer():
+            while True:
+                try:
+                    message = await message_queue.get()
+                    msg = json.loads(message)
+                    
+                    pprint(msg.get('msg_type'))
+                    pprint(msg.get('content'))
+                    
+                    if msg.get('msg_type') == 'status':
+                        if msg['content'].get('execution_state') == 'idle':
+                            self.kernel_state = 'idle'
+                        elif msg['content'].get('execution_state') == 'busy':
+                            self.kernel_state = 'busy'
+                    
+                    # Handle widget comm messages
+                    if msg.get('msg_type') == 'comm_open':
+                        comm_id = msg['content'].get('comm_id')
+                        if comm_id:
+                            # Extract widget data from the message
+                            widget_data = msg['content'].get('data', {})
+                            state = widget_data.get('state', {})
+                            model_module = state.get('_model_module')
+                            model_name = state.get('_model_name')
+                            view_module = state.get('_view_module')
+                            view_name = state.get('_view_name')
+                            
+                            # Store widget state and model info
+                            self.widget_states[comm_id] = {
+                                'state': state,
+                                'model': {
+                                    'model_name': model_name,
+                                    'model_module': model_module,
+                                    'view_name': view_name,
+                                    'view_module': view_module
+                                },
+                                'visible': True
+                            }
+                    
+                    elif msg.get('msg_type') == 'comm_msg':
+                        comm_id = msg['content'].get('comm_id')
+                        if comm_id in self.widget_states:
+                            # Update widget state
+                            new_state = msg['content'].get('data', {}).get('state', {})
+                            self.widget_states[comm_id]['state'].update(new_state)
+                    
+                    # Handle display data messages
+                    elif msg.get('msg_type') == 'display_data':
+                        display_data = msg['content'].get('data', {})
+                        cell_id = msg.get('parent_header', {}).get('msg_id', '')
+                        
+                        # Handle widget views
+                        if 'application/vnd.jupyter.widget-view+json' in display_data:
+                            widget_data = display_data['application/vnd.jupyter.widget-view+json']
+                            model_id = widget_data['model_id']
+                            
+                            # Add widget to cell's output if it exists
+                            if model_id in self.widget_states:
+                                await self.broadcast({
+                                    'action': 'kernel_message',
+                                    'data': msg,
+                                    'cell_id': cell_id,
+                                    'widgets': {
+                                        model_id: self.widget_states[model_id]
+                                    }
+                                })
+                                continue
+
+                    # broadcast the message to all clients
+                    await self.broadcast({
+                        'action': 'kernel_message',
+                        'data': msg,
+                        'cell_id': msg.get('parent_header', {}).get('msg_id', ''),
+                        'widget_state': self.widget_states.get(msg['content'].get('comm_id')) if msg.get('msg_type') in ['comm_open', 'comm_msg'] else None
+                    })
+                    
+                    if msg.get('msg_type') == 'input_request':
+                        self.request_input = True
+                        
+                        # Wait for input from client
+                        input_value = await self.input_queue.get()
+                        await self.send_input_reply(msg.get('header', {}), input_value)
+                        self.request_input = False
+                    
+                    # Store the message in response queue
+                    await self.response_queue.put(msg)
+                    
+                    message_queue.task_done()
+                except Exception as e:
+                    print(f"Error processing message: {e}")
+                    await asyncio.sleep(0.1)
+
+        # Start the consumer task
+        consumer_task = asyncio.create_task(message_consumer())
+        
+        # Main message receiver loop
         while True:
             try:
                 message = await self.kernel_ws.recv()
-                msg = json.loads(message)
-                
-                pprint(msg.get('msg_type'))
-                pprint(msg.get('content'))
-                
-                if msg.get('msg_type') == 'status':
-                    if msg['content'].get('execution_state') == 'idle':
-                        self.kernel_state = 'idle'
-                    elif msg['content'].get('execution_state') == 'busy':
-                        self.kernel_state = 'busy'
-                
-                # Handle widget comm messages
-                if msg.get('msg_type') == 'comm_open':
-                    comm_id = msg['content'].get('comm_id')
-                    if comm_id:
-                        # Extract widget data from the message
-                        widget_data = msg['content'].get('data', {})
-                        state = widget_data.get('state', {})
-                        model_module = state.get('_model_module')
-                        model_name = state.get('_model_name')
-                        view_module = state.get('_view_module')
-                        view_name = state.get('_view_name')
-                        
-                        # Store widget state and model info
-                        self.widget_states[comm_id] = {
-                            'state': state,
-                            'model': {
-                                'model_name': model_name,
-                                'model_module': model_module,
-                                'view_name': view_name,
-                                'view_module': view_module
-                            },
-                            'visible': True
-                        }
-                
-                elif msg.get('msg_type') == 'comm_msg':
-                    comm_id = msg['content'].get('comm_id')
-                    if comm_id in self.widget_states:
-                        # Update widget state
-                        new_state = msg['content'].get('data', {}).get('state', {})
-                        self.widget_states[comm_id]['state'].update(new_state)
-                
-                # Handle display data messages
-                elif msg.get('msg_type') == 'display_data':
-                    display_data = msg['content'].get('data', {})
-                    cell_id = msg.get('parent_header', {}).get('msg_id', '')
-                    
-                    # Handle widget views
-                    if 'application/vnd.jupyter.widget-view+json' in display_data:
-                        widget_data = display_data['application/vnd.jupyter.widget-view+json']
-                        model_id = widget_data['model_id']
-                        
-                        # Add widget to cell's output if it exists
-                        if model_id in self.widget_states:
-                            await self.broadcast({
-                                'action': 'kernel_message',
-                                'data': msg,
-                                'cell_id': cell_id,
-                                'widgets': {
-                                    model_id: self.widget_states[model_id]
-                                }
-                            })
-                            continue
-
-                # broadcast the message to all clients
-                await self.broadcast({
-                    'action': 'kernel_message',
-                    'data': msg,
-                    'cell_id': msg.get('parent_header', {}).get('msg_id', ''),
-                    'widget_state': self.widget_states.get(msg['content'].get('comm_id')) if msg.get('msg_type') in ['comm_open', 'comm_msg'] else None
-                })
-                
-                if msg.get('msg_type') == 'input_request':
-                    self.request_input = True
-                    
-                    # Wait for input from client
-                    input_value = await self.input_queue.get()
-                    await self.send_input_reply(msg.get('header', {}), input_value)
-                    self.request_input = False
-                    
-                
-                # Store the message in response queue
-                await self.response_queue.put(msg)
-                
+                await message_queue.put(message)
             except Exception as e:
-                print(f"Error in message listener: {e}")
+                print(f"Error receiving message: {e}")
                 await asyncio.sleep(0.1)
+                if not self.kernel_ws:
+                    break
 
     async def send_execute_request(self, code, cell_id):
         if not self.kernel_ws:
@@ -258,6 +275,7 @@ class JupyterWebRTCServer:
         print("Worker started")
         while True:
             action = await self.action_queue.get()
+            print("ACTION", action)
             try:
                 if action['action'] == 'execute_code':
                     await self.broadcast({
