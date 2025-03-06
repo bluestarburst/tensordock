@@ -270,6 +270,71 @@ class JupyterWebRTCServer:
         }
         
         await self.kernel_ws.send(json.dumps(msg))
+        
+    async def send_comm_msg(self, comm_id, data):
+        if not self.kernel_ws:
+            return
+        
+        
+#         {'buffers': [],
+#  'channel': 'iopub',
+#  'content': {'comm_id': 'bb6e1b195de34b029196f901f5e02d7f',
+#              'data': {'buffer_paths': [],
+#                       'state': {'_dom_classes': [],
+#                                 '_model_module': '@jupyter-widgets/controls',
+#                                 '_model_module_version': '2.0.0',
+#                                 '_model_name': 'VBoxModel',
+#                                 '_view_count': None,
+#                                 '_view_module': '@jupyter-widgets/controls',
+#                                 '_view_module_version': '2.0.0',
+#                                 '_view_name': 'VBoxView',
+#                                 'box_style': '',
+#                                 'children': ['IPY_MODEL_f1107eef729e45708845195d5281adf9',
+#                                              'IPY_MODEL_1862a436d8544f0492c7ee2c90774f24',
+#                                              'IPY_MODEL_de531056b8194b9ea026ed0c82e15ceb',
+#                                              'IPY_MODEL_1316f51c85c14244be74d454e06fccd6',
+#                                              'IPY_MODEL_2c9b4272037447dda59cfca0d85f498e'],
+#                                 'layout': 'IPY_MODEL_90e6a713474844fab98ae7cb88d1a00e',
+#                                 'tabbable': None,
+#                                 'tooltip': None}},
+#              'target_module': None,
+#              'target_name': 'jupyter.widget'},
+#  'header': {'date': '2025-03-02T03:32:43.328438Z',
+#             'msg_id': '53a8b12c-e11db8b7f8b847bec1cbd158_152927_39',
+#             'msg_type': 'comm_open',
+#             'session': '53a8b12c-e11db8b7f8b847bec1cbd158',
+#             'username': 'bluestarburst',
+#             'version': '5.3'},
+#  'metadata': {'version': '2.1.0'},
+#  'msg_id': '53a8b12c-e11db8b7f8b847bec1cbd158_152927_39',
+#  'msg_type': 'comm_open',
+#  'parent_header': {'date': '2025-03-01T21:32:42.251808-06:00',
+#                    'msg_id': '656361',
+#                    'msg_type': 'execute_request',
+#                    'session': 'e727e6baf71611ef98bf00155d12dbef',
+#                    'username': 'user',
+#                    'version': '5.0'}}
+        
+        hdr = {
+            'msg_id': uuid.uuid1().hex,
+            'username': 'user',
+            'session': self.session,
+            'date': datetime.datetime.now().isoformat(),
+            'msg_type': 'comm_msg',
+            'version': '5.0'
+        }
+        
+        msg = {
+            'header': hdr,
+            'parent_header': {},
+            'metadata': {},
+            'content': {'comm_id': comm_id, 'data': data},
+            'channel': 'shell'
+        }
+        
+        print("Sending comm message", msg)
+        
+        await self.kernel_ws.send(json.dumps(msg))
 
     async def worker(self):
         print("Worker started")
@@ -288,6 +353,8 @@ class JupyterWebRTCServer:
                         }
                     })
                     await self.execute_code(action['code'], action['cell_id'])
+                elif action['action'] == 'comm_msg':
+                    await self.send_comm_msg(action['comm_id'], action['data'])
             except Exception as e:
                 print(f"Error in worker: {e}")
             self.action_queue.task_done()
@@ -370,8 +437,9 @@ class JupyterWebRTCServer:
                     if self.request_input:
                         await self.input_queue.put('')
                     self.interrupt_flag = True
-                    # Send an interrupt request over the Jupyter messaging protocol
-                    # This would typically be a separate request in the Jupyter API
+                elif data['action'] == 'comm_msg':
+                    print("Received comm message", data['comm_id'])
+                    await self.action_queue.put(data)
                 else:
                     print(f"Unknown action: {data['action']}")
 
