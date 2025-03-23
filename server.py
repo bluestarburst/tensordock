@@ -395,6 +395,13 @@ class JupyterWebRTCServer:
                 'cell_id': cell_id,
                 'execution_count': execution_count
             })
+            
+    async def sudo_http_request(self, url, method, body):
+        # send the request
+        token = os.environ.get('JUPYTER_TOKEN', 'test')
+        headers = {'Authorization': f'Token {token}'}
+        response = requests.request(method, "http://localhost:8888/" + url, headers=headers, json=body)
+        return response.json()
 
     async def handle_client(self, offer):
         print("Handling client")
@@ -440,6 +447,10 @@ class JupyterWebRTCServer:
                 elif data['action'] == 'comm_msg':
                     print("Received comm message", data['comm_id'])
                     await self.action_queue.put(data)
+                elif data['action'] == 'sudo_http_request':
+                    print("Received sudo HTTP request", data['url'])
+                    res = await self.sudo_http_request(data['url'], data['method'], data['body'])
+                    await self.broadcast({'action': 'sudo_http_response', 'response': res})
                 else:
                     print(f"Unknown action: {data['action']}")
 
