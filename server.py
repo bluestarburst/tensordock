@@ -51,6 +51,7 @@ class JupyterWebRTCServer:
         self.peer_connections = set()
         self.data_channels = {}
         self.session = uuid.uuid1().hex
+        self.session_id = None
         self.kernel_id = None
         self.kernel_ws = None
         
@@ -71,6 +72,12 @@ class JupyterWebRTCServer:
         
         # Start kernel checker
         threading.Thread(target=self.check_kernel, daemon=True).start()
+        
+        # # wait for 1 second
+        time.sleep(5)
+        # create a new kernel
+        print("Creating new kernel")
+        asyncio.create_task(self.connect_to_jupyter())
 
     def check_kernel(self):
         print("Kernel checker started")
@@ -82,21 +89,27 @@ class JupyterWebRTCServer:
         
         headers = {'Authorization': f'Token {token}'}
         
-        # Create kernel
-        url = f"{base_url}/api/kernels"
-        response = requests.post(url, headers=headers)
+        # Create session
+        url = f"{base_url}/api/sessions"
+        response = requests.post(url, headers=headers, json={'name': 'python3', 'path': '/tmp/test.ipynb', 'type': 'notebook'})
+        session_info = json.loads(response.text)
+        self.session_id = session_info['id']
+        
+        # get kernel info
+        url = f"{base_url}/api/kernels/{session_info['kernel']['id']}"
+        response = requests.get(url, headers=headers)
         kernel_info = json.loads(response.text)
         self.kernel_id = kernel_info['id']
         
         # Connect to WebSocket
         ws_url = f"ws://{base_url.split('://')[-1]}/api/kernels/{self.kernel_id}/channels"
-        self.kernel_ws = await connect(ws_url, extra_headers=headers)
+        self.kernel_ws = await connect(ws_url, extra_headers=headers)   
         
         # Start message listener
         asyncio.create_task(self.listen_for_messages())
         
-        return self.kernel_id
-
+        return self.session_id
+    
     async def listen_for_messages(self):
         if not self.kernel_ws:
             print("WebSocket not connected")
@@ -400,8 +413,23 @@ class JupyterWebRTCServer:
         # send the request
         token = os.environ.get('JUPYTER_TOKEN', 'test')
         headers = {'Authorization': f'Token {token}'}
-        response = requests.request(method, "http://localhost:8888/" + url, headers=headers, json=body)
-        return response.json()
+        response = None
+        if method == 'POST':
+            response = requests.post("http://localhost:8888/" + url, headers=headers, data=body)
+        elif method == 'GET':
+            response = requests.get("http://localhost:8888/" + url, headers=headers)
+        elif method == 'PUT':
+            response = requests.put("http://localhost:8888/" + url, headers=headers, data=body)
+        elif method == 'DELETE':
+            response = requests.delete("http://localhost:8888/" + url, headers=headers)
+        
+        print("SUDO RESPONSE", response.json())        
+        
+        return {
+            'status': response.status_code,
+            'data': response.text,
+            'headers': dict(response.headers)
+        }
 
     async def handle_client(self, offer):
         print("Handling client")
@@ -448,9 +476,12 @@ class JupyterWebRTCServer:
                     print("Received comm message", data['comm_id'])
                     await self.action_queue.put(data)
                 elif data['action'] == 'sudo_http_request':
-                    print("Received sudo HTTP request", data['url'])
-                    res = await self.sudo_http_request(data['url'], data['method'], data['body'])
-                    await self.broadcast({'action': 'sudo_http_response', 'response': res})
+                    
+                    # body may not be present
+                    body = data.get('body', {})
+                    print("Received sudo HTTP", data['url'], data['method'], body)
+                    res = await self.sudo_http_request(data['url'], data['method'], body)
+                    await self.broadcast({'action': 'sudo_http_response', 'data': res})
                 else:
                     print(f"Unknown action: {data['action']}")
 
