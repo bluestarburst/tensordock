@@ -428,9 +428,7 @@ class JupyterWebRTCServer:
         elif method == 'PUT':
             response = requests.put("http://localhost:8888/" + url, headers=headers, data=body)
         elif method == 'DELETE':
-            response = requests.delete("http://localhost:8888/" + url, headers=headers)
-        
-        print("SUDO RESPONSE", response.json())        
+            response = requests.delete("http://localhost:8888/" + url, headers=headers)     
         
         return {
             'status': response.status_code,
