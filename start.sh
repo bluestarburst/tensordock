@@ -11,8 +11,8 @@ turnserver \
         --no-tlsv1_1 \
         --realm="example.org" \
         --user="${TURN_USERNAME:-user}:${TURN_PASSWORD:-password}" \
-        -p "${VAST_UDP_PORT_70001}" \
-        -X "${PUBLIC_IPADDR}" 2>&1 | tee /var/log/coturn.log &
+        -p "${VAST_UDP_PORT_70001:-6000}" \
+        -X "${PUBLIC_IPADDR:-localhost}" 2>&1 | tee /var/log/coturn.log &
 
 # run jupyter server in the background
 jupyter server &
