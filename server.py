@@ -111,7 +111,10 @@ class JupyterWebRTCServer:
         
         ws_url = f"ws://{base_url.split('://')[-1]}/api/events/subscribe"
         self.event_ws = await connect(ws_url, extra_headers=headers)
-        print("Connected to Jupyter kernel")
+        print("Subscribed to events")
+        
+        # Start event listener
+        asyncio.create_task(self.listen_for_events_messages())
         
         return self.session_id
     
@@ -130,7 +133,7 @@ class JupyterWebRTCServer:
                     
                     await self.broadcast({
                         'action': 'kernel',
-                        'data': msg,
+                        'data': message,
                     })
                     
                     # Store the message in response queue
@@ -167,6 +170,8 @@ class JupyterWebRTCServer:
                 try:
                     message = await message_queue.get()
                     msg = json.loads(message)
+                    
+                    print("Event message", msg)
                     
                     await self.broadcast({
                         'action': 'events',
@@ -389,15 +394,15 @@ class JupyterWebRTCServer:
         headers = {'Authorization': f'Token {token}'}
         response = None
         if method == 'POST':
-            response = requests.post("http://localhost:8888/" + url, headers=headers, data=body)
+            response = requests.post("http://localhost:8888/" + url, headers=headers, data=json.dumps(body))
         elif method == 'GET':
             response = requests.get("http://localhost:8888/" + url, headers=headers)
         elif method == 'PUT':
-            response = requests.put("http://localhost:8888/" + url, headers=headers, data=body)
+            response = requests.put("http://localhost:8888/" + url, headers=headers, data=json.dumps(body))
         elif method == 'DELETE':
             response = requests.delete("http://localhost:8888/" + url, headers=headers)     
         
-        print("Sudo HTTP response", response.status_code, response.text)
+        # print("Sudo HTTP response", response.status_code, response.text)
         
         return {
             'status': response.status_code,
@@ -455,7 +460,7 @@ class JupyterWebRTCServer:
                     body = data.get('body', {})
                     print("Received sudo HTTP", data['url'], data['method'], body)
                     res = await self.sudo_http_request(data['url'], data['method'], body)
-                    await self.broadcast({'action': 'sudo_http_response', 'data': res})
+                    await self.broadcast({'action': data['msgId'], 'data': res})
                 elif data['action'] == 'kernel':
                     # send message to websocket
                     await self.action_queue.put(data)
