@@ -242,81 +242,76 @@ class ActionProcessor(LoggerMixin):
         return result
     
     async def _handle_kernel_message(self, action: Dict[str, Any]) -> bool:
-        """Handle kernel message action."""
-        if not self.jupyter_manager:
-            raise Exception("Jupyter manager not available")
+        """Handle kernel message action via WebSocket bridge."""
+        if not hasattr(self, 'websocket_bridge') or not self.websocket_bridge:
+            raise Exception("WebSocket bridge service not available")
         
-        # CRITICAL DEBUG: Log the entire action structure
-        debug_log(f"🔍 [ActionProcessor] Raw kernel message action received", {
-            "action_keys": list(action.keys()),
-            "action_type": type(action).__name__,
-            "action_preview": str(action)[:500]
-        })
-        
-        # CRITICAL FIX: The kernel message is directly in the action, not in a 'data' field
-        # The action itself contains header, parent_header, metadata, content
-        message_to_send = action
-        
-        # Extract message details from the action itself
-        msg_type = action.get('header', {}).get('msg_type', 'unknown')
+        # Extract message details from the action
         instance_id = action.get('instanceId')
         kernel_id = action.get('kernelId')
+        data = action.get('data')  # The Jupyter message is in the 'data' field
         
-        # CRITICAL DEBUG: Log the message structure
-        debug_log(f"🔍 [ActionProcessor] Kernel message structure", {
-            "msg_type": msg_type,
-            "msg_id": action.get('header', {}).get('msg_id'),
-            "has_header": 'header' in action,
-            "has_content": 'content' in action,
-            "content_keys": list(action.get('content', {}).keys()) if isinstance(action.get('content'), dict) else None,
+        debug_log(f"🔍 [ActionProcessor] Kernel message via WebSocket bridge", {
             "instance_id": instance_id,
-            "kernel_id": kernel_id
+            "kernel_id": kernel_id,
+            "has_data": data is not None,
+            "data_type": type(data).__name__ if data else 'None'
         })
         
-        debug_log(f"🐍 [ActionProcessor] Processing kernel message", {
-            "msg_type": msg_type,
-            "instance_id": instance_id,
-            "kernel_id": kernel_id
-        })
-        print(f"🐍 [ActionProcessor] Processing kernel message: {msg_type}")
+        if not instance_id or not data:
+            debug_log(f"❌ [ActionProcessor] Missing required fields for kernel message", {
+                "instance_id": instance_id,
+                "has_data": data is not None
+            })
+            return False
         
-        # CRITICAL FIX: Check if this is a kernel_info_request for a different kernel
-        if msg_type == 'kernel_info_request' and kernel_id:
-            # Get the server's current kernel ID
-            server_kernel_id = self.jupyter_manager.get_kernel_id()
+        try:
+            # Extract message details from the Jupyter message data
+            msg_type = data.get('header', {}).get('msg_type', 'unknown')
+            msg_id = data.get('header', {}).get('msg_id', 'unknown')
+            session_id = data.get('header', {}).get('session', 'unknown')
             
-            if server_kernel_id and kernel_id != server_kernel_id:
-                debug_log(f"🔄 [ActionProcessor] Kernel info request for different kernel, routing via HTTP", {
-                    "requested_kernel_id": kernel_id,
-                    "server_kernel_id": server_kernel_id,
-                    "msg_type": msg_type
-                })
-                print(f"🔄 [ActionProcessor] Kernel info request for different kernel: {kernel_id} vs server: {server_kernel_id}")
+            debug_log(f"🔍 [ActionProcessor] Jupyter message details", {
+                "msg_type": msg_type,
+                "msg_id": msg_id,
+                "session_id": session_id
+            })
+            
+            # CRITICAL: Extract session ID from the kernel message and update WebSocket bridge
+            if session_id and session_id != 'unknown':
+                debug_log(f"🔍 [ActionProcessor] Extracted session ID from kernel message: {session_id}")
                 
-                # Route this request via HTTP to the correct kernel
-                success = await self._route_kernel_message_via_http(kernel_id, action)
-                return success
-        
-        # Send through Jupyter manager for the server's primary kernel
-        # CRITICAL FIX: Send the properly formatted message
-        success = await self.jupyter_manager.send_kernel_message(message_to_send)
-        
-        if success:
-            debug_log(f"✅ [ActionProcessor] Kernel message sent", {
-                "msg_type": msg_type,
+                # Update the WebSocket bridge with the session ID for this instance
+                self.websocket_bridge.update_session_id(instance_id, session_id)
+            else:
+                debug_log(f"⚠️ [ActionProcessor] No valid session ID found in kernel message header")
+            
+            # Send message via WebSocket bridge
+            success = await self.websocket_bridge.send_message(instance_id, kernel_id or 'default', data)
+            
+            if success:
+                debug_log(f"✅ [ActionProcessor] Kernel message sent via WebSocket bridge", {
+                    "instance_id": instance_id,
+                    "kernel_id": kernel_id,
+                    "msg_type": msg_type,
+                    "session_id": session_id
+                })
+                return True
+            else:
+                debug_log(f"❌ [ActionProcessor] Failed to send kernel message via WebSocket bridge", {
+                    "instance_id": instance_id,
+                    "kernel_id": kernel_id
+                })
+                return False
+                
+        except Exception as e:
+            debug_log(f"❌ [ActionProcessor] Error sending kernel message via WebSocket bridge", {
                 "instance_id": instance_id,
-                "kernel_id": kernel_id
+                "kernel_id": kernel_id,
+                "error": str(e),
+                "error_type": type(e).__name__
             })
-            print(f"✅ [ActionProcessor] Kernel message sent successfully: {msg_type}")
-        else:
-            debug_log(f"❌ [ActionProcessor] Failed to send kernel message", {
-                "msg_type": msg_type,
-                "instance_id": instance_id,
-                "kernel_id": kernel_id
-            })
-            print(f"❌ [ActionProcessor] Failed to send kernel message: {msg_type}")
-        
-        return success
+            return False
     
     async def _route_kernel_message_via_http(self, target_kernel_id: str, message_data: Any) -> bool:
         """Route a kernel message to a specific kernel via HTTP API."""

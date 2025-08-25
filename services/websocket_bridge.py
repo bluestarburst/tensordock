@@ -150,6 +150,7 @@ class WebSocketBridge(LoggerMixin):
                 # Store frontend connection info
                 self.frontend_connections[instance_id] = {
                     'kernel_id': kernel_id,
+                    'session_id': None,  # Will be set when frontend sends session info
                     'connected_at': datetime.datetime.now(),
                     'status': 'connected',
                     'channels': ['shell', 'iopub', 'stdin', 'control']  # All channels available
@@ -513,8 +514,9 @@ class WebSocketBridge(LoggerMixin):
                     else:
                         data = message
                     
-                    # Process message
-                    await self._handle_jupyter_message(kernel_id, data, 'shell') # All messages go to shell channel
+                    # Process message - determine the correct channel based on message type
+                    channel = self._get_target_channel(data.get('header', {}).get('msg_type', 'unknown'))
+                    await self._handle_jupyter_message(kernel_id, data, channel)
                     
                 except json.JSONDecodeError as e:
                     debug_log(f"❌ [WebSocketBridge] Failed to parse Jupyter message", {
@@ -691,26 +693,48 @@ class WebSocketBridge(LoggerMixin):
                 "channel": channel,
                 "frontend_connections_count": len(self.frontend_connections),
                 "frontend_connections_keys": list(self.frontend_connections.keys()),
-                "frontend_connections": self.frontend_connections
+                "frontend_connections": self.frontend_connections,
+                "jupyter_connections": self.jupyter_connections
             })
             
             # Find the correct instance ID for this kernel
             instance_id = None
             
-            # Create a reverse mapping from kernel_id to instance_id
-            kernel_to_instance = {}
-            for frontend_instance_id, frontend_info in self.frontend_connections.items():
-                if frontend_info.get('kernel_id'):
-                    kernel_to_instance[frontend_info['kernel_id']] = frontend_instance_id
+            # CRITICAL: Jupyter messages have a session field, not kernel_id
+            # We need to map by session ID, not kernel ID
+            session_id = message.get('header', {}).get('session')
+            if session_id:
+                debug_log(f"🔍 [WebSocketBridge] Message has session ID: {session_id}")
+                
+                # Look for a frontend connection that matches this session
+                for frontend_instance_id, frontend_info in self.frontend_connections.items():
+                    if frontend_info.get('session_id') == session_id:
+                        instance_id = frontend_instance_id
+                        debug_log(f"🔍 [WebSocketBridge] Found instance {instance_id} for session {session_id}")
+                        break
+                
+                if not instance_id:
+                    debug_log(f"⚠️ [WebSocketBridge] No frontend instance found for session {session_id}")
+                    # Fall back to kernel_id mapping
+                    pass
             
-            debug_log(f"🔍 [WebSocketBridge] Kernel to instance mapping", {
-                "kernel_id": kernel_id,
-                "kernel_to_instance": kernel_to_instance,
-                "target_instance_id": kernel_to_instance.get(kernel_id)
-            })
-            
-            # Look up the instance ID for this kernel
-            instance_id = kernel_to_instance.get(kernel_id)
+            # Fallback: Create a reverse mapping from kernel_id to instance_id
+            if not instance_id:
+                kernel_to_instance = {}
+                for frontend_instance_id, frontend_info in self.frontend_connections.items():
+                    if frontend_info.get('kernel_id'):
+                        kernel_to_instance[frontend_info['kernel_id']] = frontend_instance_id
+                        debug_log(f"🔍 [WebSocketBridge] Mapping kernel {frontend_info['kernel_id']} to instance {frontend_instance_id}")
+                
+                debug_log(f"🔍 [WebSocketBridge] Kernel to instance mapping", {
+                    "kernel_id": kernel_id,
+                    "kernel_to_instance": kernel_to_instance,
+                    "target_instance_id": kernel_to_instance.get(kernel_id),
+                    "all_kernel_ids": list(kernel_to_instance.keys())
+                })
+                
+                # Look up the instance ID for this kernel
+                instance_id = kernel_to_instance.get(kernel_id)
             
             if not instance_id:
                 debug_log(f"⚠️ [WebSocketBridge] No frontend instance found for kernel", {
@@ -786,6 +810,22 @@ class WebSocketBridge(LoggerMixin):
             debug_log(f"❌ [WebSocketBridge] Error notifying connection status", {
                 "kernel_id": kernel_id,
                 "status": status,
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+    
+    def update_session_id(self, instance_id: str, session_id: str):
+        """Update the session ID for a frontend connection."""
+        try:
+            if instance_id in self.frontend_connections:
+                self.frontend_connections[instance_id]['session_id'] = session_id
+                debug_log(f"📝 [WebSocketBridge] Updated session ID for instance {instance_id}: {session_id}")
+            else:
+                debug_log(f"⚠️ [WebSocketBridge] Instance {instance_id} not found when updating session ID")
+        except Exception as e:
+            debug_log(f"❌ [WebSocketBridge] Error updating session ID", {
+                "instance_id": instance_id,
+                "session_id": session_id,
                 "error": str(e),
                 "error_type": type(e).__name__
             })
