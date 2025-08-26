@@ -48,6 +48,11 @@ class WebSocketManager(LoggerMixin):
         
         # Message processing state
         self.processing_messages = False
+        
+        # Priority queues for ordered message processing
+        self.high_priority_queue = asyncio.Queue()
+        self.medium_priority_queue = asyncio.Queue()
+        self.normal_priority_queue = asyncio.Queue()
     
     async def connect(self, ws_url: str, extra_headers: Dict[str, str] = None) -> bool:
         """Connect to a WebSocket URL."""
@@ -123,30 +128,31 @@ class WebSocketManager(LoggerMixin):
         print(f"📥 [WebSocket] Message consumer stopped")
     
     async def _response_consumer(self):
-        """Process messages from the response queue and send them to the frontend via WebRTC."""
-        debug_log(f"📤 [WebSocket] Response consumer started")
-        print(f"📤 [WebSocket] Response consumer started")
+        """Process messages from priority queues and send them to the frontend via WebRTC."""
+        debug_log(f"📤 [WebSocket] Response consumer started with priority queues")
+        print(f"📤 [WebSocket] Response consumer started with priority queues")
         
         while self.connected:
             try:
-                # Get message from response queue
-                message = await self.response_queue.get()
+                # Process messages in priority order: high -> medium -> normal -> response_queue (legacy)
+                message = await self._get_next_priority_message()
                 
                 if message is None:  # Shutdown signal
                     break
                 
-                debug_log(f"📤 [WebSocket] Processing message from response queue", {
-                    "message_type": type(message).__name__,
-                    "has_header": bool(message.get('header')),
-                    "header_keys": list(message.get('header', {}).keys()) if message.get('header') else [],
-                    "message_keys": list(message.keys()) if isinstance(message, dict) else []
+                msg_type = message.get('header', {}).get('msg_type', 'unknown')
+                msg_id = message.get('header', {}).get('msg_id', 'unknown')
+                
+                debug_log(f"📤 [WebSocket] Processing priority message", {
+                    "msg_type": msg_type,
+                    "msg_id": msg_id,
+                    "has_channel": bool(message.get('channel')),
+                    "channel": message.get('channel', 'unknown')
                 })
-                print(f"📤 [WebSocket] Processing message from response queue: {type(message).__name__}")
+                print(f"📤 [WebSocket] Processing priority message: {msg_type} (ID: {msg_id})")
                 
                 # CRITICAL: Send kernel message back to frontend via WebRTC
                 await self._send_kernel_message_to_frontend(message)
-                
-                self.response_queue.task_done()
                 
             except asyncio.CancelledError:
                 debug_log(f"📤 [WebSocket] Response consumer cancelled")
@@ -158,9 +164,8 @@ class WebSocketManager(LoggerMixin):
                     "error_type": type(e).__name__
                 })
                 print(f"❌ [WebSocket] Error in response consumer: {e}")
-                # Don't break the loop on individual message errors
-                if self.response_queue.qsize() > 0:
-                    self.response_queue.task_done()
+                # Continue processing other messages
+                await asyncio.sleep(0.01)
         
         debug_log(f"📤 [WebSocket] Response consumer stopped")
         print(f"📤 [WebSocket] Response consumer stopped")
@@ -225,48 +230,65 @@ class WebSocketManager(LoggerMixin):
             print(f"❌ [WebSocket] Failed to send kernel message to frontend: {e}")
     
     async def _handle_message(self, message: str):
-        """Handle incoming WebSocket message."""
+        """Handle incoming WebSocket message with proper ordering."""
         try:
             # Parse message
             msg = json.loads(message)
             msg_type = msg.get('header', {}).get('msg_type', 'unknown')
             msg_id = msg.get('header', {}).get('msg_id', 'unknown')
+            parent_msg_id = msg.get('parent_header', {}).get('msg_id', 'none')
+            channel = self._get_target_channel(msg_type)
             
             debug_log(f"📥 [WebSocket] Message received", {
                 "msg_type": msg_type,
                 "msg_id": msg_id,
+                "parent_msg_id": parent_msg_id,
+                "channel": channel,
                 "message_length": len(message)
             })
             
-            print(f"📥 [WebSocket] Message received: {msg_type} (ID: {msg_id})")
+            print(f"📥 [WebSocket] Message received: {msg_type} (ID: {msg_id}, Parent: {parent_msg_id}, Channel: {channel})")
             
-            # CRITICAL: Handle kernel_info_reply to track status transitions
+            # Add channel information to message for proper routing
+            msg['channel'] = channel
+            
+            # CRITICAL: Handle different message types with proper priorities
             if msg_type == 'kernel_info_reply':
                 debug_log(f"🎯 [WebSocket] Kernel info reply received", {
                     "msg_id": msg_id,
                     "timestamp": datetime.datetime.now().isoformat()
                 })
                 print(f"🎯 [WebSocket] Kernel info reply received!")
-                print(f"🎯 [WebSocket] Message ID: {msg_id}")
                 
-                # Store in response queue for processing
-                await self.response_queue.put(msg)
+                # High priority - put at front of queue
+                await self._priority_queue_put(msg, priority='high')
                 
-            # CRITICAL: Handle status messages to track execution state
             elif msg_type == 'status':
                 execution_state = msg.get('content', {}).get('execution_state', 'unknown')
                 debug_log(f"📊 [WebSocket] Status message received", {
                     "execution_state": execution_state,
-                    "msg_id": msg_id
+                    "msg_id": msg_id,
+                    "parent_msg_id": parent_msg_id
                 })
                 print(f"📊 [WebSocket] Status message: execution_state = {execution_state}")
                 
-                # Store in response queue for processing
-                await self.response_queue.put(msg)
+                # High priority - status updates should be immediate
+                await self._priority_queue_put(msg, priority='high')
+                
+            elif msg_type in ['execute_reply', 'execute_result', 'stream', 'display_data', 'error']:
+                debug_log(f"📤 [WebSocket] Output message received", {
+                    "msg_type": msg_type,
+                    "msg_id": msg_id,
+                    "parent_msg_id": parent_msg_id
+                })
+                print(f"📤 [WebSocket] Output message: {msg_type}")
+                
+                # Medium priority - execution results
+                await self._priority_queue_put(msg, priority='medium')
                 
             else:
-                # Store other messages in response queue
-                await self.response_queue.put(msg)
+                # Normal priority - other messages
+                await self._priority_queue_put(msg, priority='normal')
             
             # Call message handlers if registered
             if msg_type in self.message_handlers:
@@ -539,6 +561,98 @@ class WebSocketManager(LoggerMixin):
                 "total_handlers": len(self.message_handlers)
             })
     
+    async def _priority_queue_put(self, message: Dict[str, Any], priority: str = 'normal'):
+        """Put message in appropriate priority queue."""
+        try:
+            if priority == 'high':
+                await self.high_priority_queue.put(message)
+                debug_log(f"📥 [WebSocket] Message added to high priority queue", {
+                    "msg_type": message.get('header', {}).get('msg_type', 'unknown'),
+                    "queue_size": self.high_priority_queue.qsize()
+                })
+            elif priority == 'medium':
+                await self.medium_priority_queue.put(message)
+                debug_log(f"📥 [WebSocket] Message added to medium priority queue", {
+                    "msg_type": message.get('header', {}).get('msg_type', 'unknown'),
+                    "queue_size": self.medium_priority_queue.qsize()
+                })
+            else:
+                await self.normal_priority_queue.put(message)
+                debug_log(f"📥 [WebSocket] Message added to normal priority queue", {
+                    "msg_type": message.get('header', {}).get('msg_type', 'unknown'),
+                    "queue_size": self.normal_priority_queue.qsize()
+                })
+        except Exception as e:
+            debug_log(f"❌ [WebSocket] Error adding message to priority queue", {
+                "priority": priority,
+                "error": str(e)
+            })
+            # Fallback to response queue
+            await self.response_queue.put(message)
+    
+    async def _get_next_priority_message(self):
+        """Get next message from priority queues in order: high -> medium -> normal -> response_queue."""
+        try:
+            # Check high priority first
+            if not self.high_priority_queue.empty():
+                return await self.high_priority_queue.get()
+            
+            # Then medium priority
+            if not self.medium_priority_queue.empty():
+                return await self.medium_priority_queue.get()
+            
+            # Then normal priority
+            if not self.normal_priority_queue.empty():
+                return await self.normal_priority_queue.get()
+            
+            # Finally check legacy response queue
+            if not self.response_queue.empty():
+                message = await self.response_queue.get()
+                self.response_queue.task_done()
+                return message
+            
+            # Wait for any message to arrive
+            done, pending = await asyncio.wait([
+                asyncio.create_task(self.high_priority_queue.get()),
+                asyncio.create_task(self.medium_priority_queue.get()),
+                asyncio.create_task(self.normal_priority_queue.get()),
+                asyncio.create_task(self.response_queue.get())
+            ], return_when=asyncio.FIRST_COMPLETED)
+            
+            # Cancel pending tasks
+            for task in pending:
+                task.cancel()
+            
+            # Return the first completed result
+            for task in done:
+                result = await task
+                if result is not None:
+                    return result
+            
+            return None
+            
+        except Exception as e:
+            debug_log(f"❌ [WebSocket] Error getting next priority message", {
+                "error": str(e)
+            })
+            return None
+    
+    def _get_target_channel(self, msg_type: str) -> str:
+        """Determine the target channel for a message type."""
+        if msg_type in ['kernel_info_request', 'kernel_info_reply', 'execute_request', 'execute_reply', 
+                       'complete_request', 'complete_reply', 'inspect_request', 'inspect_reply',
+                       'history_request', 'history_reply', 'is_complete_request', 'is_complete_reply']:
+            return 'shell'
+        elif msg_type in ['status', 'execute_input', 'execute_result', 'display_data', 'stream', 'error',
+                         'clear_output', 'debug_event', 'comm_open', 'comm_msg', 'comm_close']:
+            return 'iopub'
+        elif msg_type in ['input_request', 'input_reply']:
+            return 'stdin'
+        elif msg_type in ['interrupt_request', 'interrupt_reply', 'shutdown_request', 'shutdown_reply']:
+            return 'control'
+        else:
+            return 'unknown'
+    
     def get_status(self) -> Dict[str, Any]:
         """Get current WebSocket status."""
         return {
@@ -548,6 +662,9 @@ class WebSocketManager(LoggerMixin):
             'processing_messages': self.processing_messages,
             'message_queue_size': self.message_queue.qsize(),
             'response_queue_size': self.response_queue.qsize(),
+            'high_priority_queue_size': self.high_priority_queue.qsize(),
+            'medium_priority_queue_size': self.medium_priority_queue.qsize(),
+            'normal_priority_queue_size': self.normal_priority_queue.qsize(),
             'total_handlers': len(self.message_handlers)
         }
     
