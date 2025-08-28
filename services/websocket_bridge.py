@@ -688,14 +688,6 @@ class WebSocketBridge(LoggerMixin):
     async def _forward_to_frontend(self, kernel_id: str, message: Dict[str, Any], channel: str = 'shell'):
         """Forward message from Jupyter to frontend via WebRTC."""
         try:
-            debug_log(f"🔍 [WebSocketBridge] Starting _forward_to_frontend", {
-                "kernel_id": kernel_id,
-                "channel": channel,
-                "frontend_connections_count": len(self.frontend_connections),
-                "frontend_connections_keys": list(self.frontend_connections.keys()),
-                "frontend_connections": self.frontend_connections,
-                "jupyter_connections": self.jupyter_connections
-            })
             
             # Find the correct instance ID for this kernel
             instance_id = None
@@ -755,12 +747,12 @@ class WebSocketBridge(LoggerMixin):
                 'timestamp': datetime.datetime.now().isoformat()
             }
             
-            debug_log(f"📤 [WebSocketBridge] Prepared message for frontend", {
-                "message_structure": message_with_channel,
-                "instanceId": instance_id,
-                "kernelId": kernel_id,
-                "channel": channel
-            })
+            # debug_log(f"📤 [WebSocketBridge] Prepared message for frontend", {
+            #     "message_structure": message_with_channel,
+            #     "instanceId": instance_id,
+            #     "kernelId": kernel_id,
+            #     "channel": channel
+            # })
             
             # Broadcast to all connected frontend instances
             if self.broadcast_callback:

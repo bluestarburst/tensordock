@@ -52,12 +52,12 @@ class HTTPProxyService(LoggerMixin):
             # Ensure body is not None for logging
             safe_body = body if body is not None else {}
             
-            debug_log(f"🌐 [HTTPProxy] Processing sudo HTTP request", {
-                "url": url,
-                "method": method,
-                "body_keys": list(safe_body.keys()) if isinstance(safe_body, dict) else [],
-                "timestamp": datetime.datetime.now().isoformat()
-            })
+            # debug_log(f"🌐 [HTTPProxy] Processing sudo HTTP request", {
+            #     "url": url,
+            #     "method": method,
+            #     "body_keys": list(safe_body.keys()) if isinstance(safe_body, dict) else [],
+            #     "timestamp": datetime.datetime.now().isoformat()
+            # })
             
             # Update statistics
             self.request_stats['total_requests'] += 1
