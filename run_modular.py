@@ -5,9 +5,37 @@ This script sets up the Python path correctly and runs the server.
 """
 import sys
 import os
+import datetime
 
 # Get the directory containing this script
 script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Create logs directory if it doesn't exist
+logs_dir = os.path.join(script_dir, "logs")
+os.makedirs(logs_dir, exist_ok=True)
+
+# Create a timestamped log file for this run
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+log_file = os.path.join(logs_dir, f"server_run_{timestamp}.log")
+
+# Redirect stdout and stderr to the log file
+class Logger:
+    def __init__(self, filename):
+        self.terminal = sys.stdout
+        self.log = open(filename, 'a', encoding='utf-8')
+    
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+        self.log.flush()
+    
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
+# Redirect stdout and stderr
+sys.stdout = Logger(log_file)
+sys.stderr = Logger(log_file)
 
 # Add the script directory to Python path
 sys.path.insert(0, script_dir)
@@ -24,6 +52,7 @@ try:
     print("⚙️  Message Routing: Action processor configured")   
     print(f"📁 Working directory: {script_dir}")
     print(f"🐍 Python path: {sys.path[0]}")
+    print(f"📝 All output will be logged to: {log_file}")
 
     # Run the server
     asyncio.run(main())

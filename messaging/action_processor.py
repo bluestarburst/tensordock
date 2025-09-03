@@ -6,7 +6,7 @@ Handles specific action types and integrates with other modules.
 import asyncio
 import json
 import datetime
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, Set
 
 # Use absolute imports to avoid relative import issues
 import sys
@@ -40,6 +40,10 @@ class ActionProcessor(LoggerMixin):
             'failed_actions': 0,
             'start_time': datetime.datetime.now()
         }
+        
+        # ✅ CRITICAL FIX: Add message deduplication tracking
+        self.processed_comm_messages: Set[str] = set()  # Track processed comm message IDs
+        self.comm_message_tracker: Dict[str, Set[str]] = {}  # comm_id -> set of processed msg_ids
         
         # Register default handlers
         self._register_default_handlers()
@@ -215,31 +219,80 @@ class ActionProcessor(LoggerMixin):
         return execution_count
     
     async def _handle_comm_msg(self, action: Dict[str, Any]):
-        """Handle comm message action."""
-        if not self.widget_service:
-            raise Exception("Widget service not available")
+        """Handle comm message action with proper Jupyter integration."""
+        instance_id = action.get('instanceId')
+        kernel_id = action.get('kernelId')
         
-        comm_id = action.get('comm_id')
-        data = action.get('data', {})
-        client_id = action.get('client_id', 'unknown')
+        if not instance_id or not kernel_id:
+            raise ValueError("Missing instanceId or kernelId in comm message")
         
-        debug_log(f"💬 [ActionProcessor] Comm message received", {
+        # Extract Jupyter message from action
+        jupyter_message = {
+            'header': action.get('header', {}),
+            'content': action.get('content', {}),
+            'metadata': action.get('metadata', {}),
+            'buffers': action.get('buffers', [])
+        }
+        
+        # ✅ CRITICAL FIX: Check for duplicate comm message processing
+        msg_id = jupyter_message.get('header', {}).get('msg_id')
+        comm_id = jupyter_message.get('content', {}).get('comm_id')
+        
+        if msg_id and msg_id in self.processed_comm_messages:
+            debug_log(f"🔄 [ActionProcessor] Skipping duplicate comm message", {
+                "instance_id": instance_id,
+                "kernel_id": kernel_id,
+                "msg_id": msg_id,
+                "comm_id": comm_id
+            })
+            return {"success": True, "message": "Duplicate comm message skipped"}
+        
+        # Track processed message
+        if msg_id:
+            self.processed_comm_messages.add(msg_id)
+        
+        # Track comm messages by comm_id
+        if comm_id:
+            if comm_id not in self.comm_message_tracker:
+                self.comm_message_tracker[comm_id] = set()
+            if msg_id:
+                self.comm_message_tracker[comm_id].add(msg_id)
+        
+        debug_log(f"💬 [ActionProcessor] Enhanced comm message handling", {
+            "instance_id": instance_id,
+            "kernel_id": kernel_id,
+            "msg_type": jupyter_message.get('header', {}).get('msg_type'),
             "comm_id": comm_id,
-            "client_id": client_id,
-            "data_keys": list(data.keys()) if data else []
+            "target_name": jupyter_message.get('content', {}).get('target_name'),
+            "msg_id": msg_id
         })
         
-        # Process through widget service
-        result = await self.widget_service.handle_comm_message(comm_id, data, client_id)
+        # Forward to WebSocket bridge for proper Jupyter handling
+        if self.websocket_bridge:
+            success = await self.websocket_bridge.send_message(instance_id, kernel_id, jupyter_message)
+            if not success:
+                debug_log(f"❌ [ActionProcessor] Failed to forward comm message to Jupyter")
         
-        if result.get('success') and self.broadcast_callback:
-            await self.broadcast_callback({
-                'action': 'comm_msg_processed',
-                'comm_id': comm_id,
-                'result': result
-            })
+        # Also track in widget service for state management
+        if self.widget_service:
+            try:
+                await self.widget_service.handle_jupyter_comm_message(kernel_id, jupyter_message)
+            except AttributeError:
+                # Fallback to legacy method if enhanced widget service not available
+                data = jupyter_message.get('content', {}).get('data', {})
+                client_id = action.get('client_id', 'unknown')
+                result = await self.widget_service.handle_comm_message(comm_id, data, client_id)
+                
+                if result.get('success') and self.broadcast_callback:
+                    await self.broadcast_callback({
+                        'action': 'comm_msg_processed',
+                        'comm_id': comm_id,
+                        'result': result
+                    })
+                
+                return result
         
-        return result
+        return {"success": True, "message": "Comm message processed via WebSocket bridge"}
     
     async def _handle_kernel_message(self, action: Dict[str, Any]) -> bool:
         """Handle kernel message action via WebSocket bridge."""
@@ -250,6 +303,7 @@ class ActionProcessor(LoggerMixin):
         instance_id = action.get('instanceId')
         kernel_id = action.get('kernelId')
         data = action.get('data')  # The Jupyter message is in the 'data' field
+        channel = action.get('channel')  # The channel information from frontend
         
         debug_log(f"🔍 [ActionProcessor] Kernel message via WebSocket bridge", {
             "instance_id": instance_id,
@@ -274,7 +328,8 @@ class ActionProcessor(LoggerMixin):
             debug_log(f"🔍 [ActionProcessor] Jupyter message details", {
                 "msg_type": msg_type,
                 "msg_id": msg_id,
-                "session_id": session_id
+                "session_id": session_id,
+                "channel": channel
             })
             
             # CRITICAL: Extract session ID from the kernel message and update WebSocket bridge
@@ -286,15 +341,16 @@ class ActionProcessor(LoggerMixin):
             else:
                 debug_log(f"⚠️ [ActionProcessor] No valid session ID found in kernel message header")
             
-            # Send message via WebSocket bridge
-            success = await self.websocket_bridge.send_message(instance_id, kernel_id or 'default', data)
+            # Send message via WebSocket bridge with channel information
+            success = await self.websocket_bridge.send_message(instance_id, kernel_id or 'default', data, channel)
             
             if success:
                 debug_log(f"✅ [ActionProcessor] Kernel message sent via WebSocket bridge", {
                     "instance_id": instance_id,
                     "kernel_id": kernel_id,
                     "msg_type": msg_type,
-                    "session_id": session_id
+                    "session_id": session_id,
+                    "channel": channel
                 })
                 return True
             else:

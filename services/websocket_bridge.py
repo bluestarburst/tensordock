@@ -31,29 +31,138 @@ class WebSocketBridge(LoggerMixin):
         super().__init__()
         self.config = config
         
-        # WebSocket connections to Jupyter server
-        self.jupyter_connections: Dict[str, Any] = {}  # kernel_id -> WebSocket connection
-        
-        # Frontend WebRTC connections
-        self.frontend_connections: Dict[str, Dict[str, Any]] = {}  # instance_id -> connection info
-        
-        # Message routing and state
-        self.message_handlers: Dict[str, Callable] = {}
-        self.pending_messages: Dict[str, Dict[str, Any]] = {}  # msg_id -> message info
-        self.message_queues: Dict[str, asyncio.Queue] = {}  # kernel_id -> message queue
-        
         # Connection management
-        self.connection_states: Dict[str, str] = {}  # instance_id -> connection state
-        self.reconnect_tasks: Dict[str, asyncio.Task] = {}
+        self.jupyter_connections: Dict[str, Dict[str, Any]] = {}  # kernel_id -> connection info
+        self.frontend_connections: Dict[str, Dict[str, Any]] = {}  # instance_id -> connection info
+        self.connection_states: Dict[str, str] = {}  # instance_id -> state
         
-        # Broadcast callback for sending messages to frontend
+        # Message tracking
+        self.pending_messages: Dict[str, Dict[str, Any]] = {}  # msg_id -> message info
+        self.processed_messages: Set[str] = set()  # Track processed message IDs to prevent duplicates
+        self.comm_message_tracker: Dict[str, Set[str]] = {}  # comm_id -> set of processed msg_ids
+        self.most_recent_comm_messages: Dict[str, Dict[str, Any]] = {}  # kernel_id -> most recent comm message
+        
+        # ✅ CRITICAL FIX: Add missing message_queues attribute
+        self.message_queues: Dict[str, asyncio.Queue] = {}  # instance_id -> message queue
+        
+        # ✅ CRITICAL FIX: Add missing message_processor_tasks attribute
+        self.message_processor_tasks: Dict[str, asyncio.Task] = {}  # kernel_id -> message processor task
+        
+        # Broadcast callback
         self.broadcast_callback: Optional[Callable] = None
         
-        # Task management
-        self.message_processor_tasks: Dict[str, asyncio.Task] = {}
-        self.cleanup_task: Optional[asyncio.Task] = None
+        # Start periodic cleanup task
+        asyncio.create_task(self._periodic_cleanup())
         
-        debug_log(f"🔌 [WebSocketBridge] WebSocket bridge initialized")
+        # Start connection health monitoring task
+        asyncio.create_task(self._periodic_connection_health_check())
+        
+        debug_log(f"🔌 [WebSocketBridge] WebSocket bridge service initialized")
+    
+    async def _periodic_cleanup(self):
+        """Periodic cleanup task to prevent memory leaks."""
+        while True:
+            try:
+                await asyncio.sleep(300)  # Run every 5 minutes
+                await self._cleanup_old_messages()
+            except Exception as e:
+                debug_log(f"❌ [WebSocketBridge] Error in periodic cleanup", {
+                    "error": str(e),
+                    "error_type": type(e).__name__
+                })
+
+    async def _periodic_connection_health_check(self):
+        """Periodically check the health of all WebSocket connections."""
+        while True:
+            try:
+                await asyncio.sleep(300)  # Check every 5 minutes
+                
+                current_time = datetime.datetime.now()
+                stale_connections = []
+                
+                for kernel_id, connection_info in self.jupyter_connections.items():
+                    websocket = connection_info.get('websocket')
+                    connected_at = connection_info.get('connected_at')
+                    
+                    if websocket is None:
+                        continue
+                    
+                    # Check if connection is too old (more than 1 hour)
+                    if connected_at and (current_time - connected_at).total_seconds() > 3600:
+                        debug_log(f"🕐 [WebSocketBridge] Connection is stale, marking for cleanup", {
+                            "kernel_id": kernel_id,
+                            "connected_at": connected_at.isoformat(),
+                            "age_seconds": (current_time - connected_at).total_seconds()
+                        })
+                        stale_connections.append(kernel_id)
+                        continue
+                    
+                    # Check if websocket is closed
+                    if websocket.closed:
+                        debug_log(f"🔌 [WebSocketBridge] WebSocket connection is closed, marking for cleanup", {
+                            "kernel_id": kernel_id
+                        })
+                        stale_connections.append(kernel_id)
+                        continue
+                    
+                    # Try to ping the connection
+                    try:
+                        pong_waiter = await websocket.ping()
+                        await asyncio.wait_for(pong_waiter, timeout=5.0)
+                        debug_log(f"💓 [WebSocketBridge] Connection health check passed", {
+                            "kernel_id": kernel_id
+                        })
+                    except (asyncio.TimeoutError, Exception) as e:
+                        debug_log(f"❌ [WebSocketBridge] Connection health check failed", {
+                            "kernel_id": kernel_id,
+                            "error": str(e)
+                        })
+                        stale_connections.append(kernel_id)
+                
+                # Clean up stale connections
+                for kernel_id in stale_connections:
+                    await self._cleanup_stale_connection(kernel_id)
+                    
+            except Exception as e:
+                debug_log(f"❌ [WebSocketBridge] Error in periodic connection health check", {
+                    "error": str(e),
+                    "error_type": type(e).__name__
+                })
+
+    async def _cleanup_stale_connection(self, kernel_id: str):
+        """Clean up a stale WebSocket connection."""
+        try:
+            if kernel_id in self.jupyter_connections:
+                connection_info = self.jupyter_connections[kernel_id]
+                websocket = connection_info.get('websocket')
+                
+                if websocket and not websocket.closed:
+                    try:
+                        await websocket.close(code=1000, reason="Connection cleanup")
+                    except Exception as e:
+                        debug_log(f"⚠️ [WebSocketBridge] Error closing websocket during cleanup", {
+                            "kernel_id": kernel_id,
+                            "error": str(e)
+                        })
+                
+                # Remove connection
+                del self.jupyter_connections[kernel_id]
+                
+                # Notify frontend instances
+                instance_ids = connection_info.get('instance_ids', [])
+                for instance_id in instance_ids:
+                    if instance_id in self.frontend_connections:
+                        await self._notify_connection_status(kernel_id, 'disconnected')
+                
+                debug_log(f"🧹 [WebSocketBridge] Stale connection cleaned up", {
+                    "kernel_id": kernel_id
+                })
+                
+        except Exception as e:
+            debug_log(f"❌ [WebSocketBridge] Error cleaning up stale connection", {
+                "kernel_id": kernel_id,
+                "error": str(e)
+            })
     
     def set_broadcast_callback(self, callback: Callable):
         """Set the broadcast callback for sending messages to frontend."""
@@ -122,8 +231,11 @@ class WebSocketBridge(LoggerMixin):
                 websocket = await connect(
                     ws_url,
                     extra_headers=headers or {},
-                    ping_interval=None,
-                    ping_timeout=None
+                    ping_interval=30,  # Send ping every 30 seconds
+                    ping_timeout=10,   # Wait 10 seconds for pong response
+                    close_timeout=10,  # Wait 10 seconds for close
+                    max_size=2**20,    # 1MB max message size
+                    max_queue=2**10    # 1024 messages max queue
                 )
                 
                 debug_log(f"✅ [WebSocketBridge] WebSocket connection established", {
@@ -339,8 +451,8 @@ class WebSocketBridge(LoggerMixin):
             'history_request': 'shell',
             'is_complete_request': 'shell',
             'comm_info_request': 'shell',
-            'comm_msg': 'shell',
-            'comm_close': 'shell',
+            'comm_msg': 'shell',  # Frontend → Kernel: Shell channel
+            'comm_close': 'shell',  # Frontend → Kernel: Shell channel
             
             # Control channel (interrupt, restart, shutdown)
             'interrupt_request': 'control',
@@ -359,9 +471,9 @@ class WebSocketBridge(LoggerMixin):
             'clear_output': 'iopub',
             'display_data': 'iopub',
             'update_display_data': 'iopub',
-            'comm_open': 'iopub',
-            'comm_msg': 'iopub',
-            'comm_close': 'iopub'
+            'comm_open': 'iopub',  # Kernel → Frontend: IOPub channel
+            'comm_msg': 'iopub',   # Kernel → Frontend: IOPub channel (for responses)
+            'comm_close': 'iopub'  # Kernel → Frontend: IOPub channel
         }
         
         return channel_mapping.get(msg_type, 'shell')  # Default to shell channel
@@ -391,6 +503,9 @@ class WebSocketBridge(LoggerMixin):
                 # If no more instances, close the WebSocket connection
                 if not kernel_info['instance_ids']:
                     await self._close_jupyter_connection(kernel_id)
+                    
+                    # ✅ CRITICAL FIX: Clean up message tracking for this kernel
+                    await self._cleanup_kernel_messages(kernel_id)
             
             debug_log(f"✅ [WebSocketBridge] Kernel disconnected", {
                 "instance_id": instance_id,
@@ -408,7 +523,7 @@ class WebSocketBridge(LoggerMixin):
             })
             return False
     
-    async def send_message(self, instance_id: str, kernel_id: str, data: Any) -> bool:
+    async def send_message(self, instance_id: str, kernel_id: str, data: Any, channel: str = None) -> bool:
         """Send a message from frontend to Jupyter server."""
         try:
             # Auto-connect if no connection exists
@@ -441,8 +556,8 @@ class WebSocketBridge(LoggerMixin):
             msg_id = data.get('header', {}).get('msg_id', 'unknown') if isinstance(data, dict) else 'unknown'
             
             if connection_type == 'websocket_single' and websocket:
-                # Determine which channel to send to based on message type
-                target_channel = self._get_target_channel(msg_type)
+                # Use provided channel or determine based on message type
+                target_channel = channel if channel else self._get_target_channel(msg_type)
                 
                 # Store message as pending for response matching
                 if msg_id != 'unknown':
@@ -470,7 +585,36 @@ class WebSocketBridge(LoggerMixin):
                     "target_channel": target_channel
                 })
                 
-                await websocket.send(json.dumps(data))
+                try:
+                    # Encode message with channel information according to Jupyter WebSocket protocol
+                    # The channel must be included in the message structure
+                    message_with_channel = {
+                        'channel': target_channel,  # Channel name must be encoded
+                        'header': data.get('header', {}),
+                        'parent_header': data.get('parent_header', {}),
+                        'metadata': data.get('metadata', {}),
+                        'content': data.get('content', {}),
+                        'buffers': data.get('buffers', [])
+                    }
+                    
+                    await websocket.send(json.dumps(message_with_channel))
+                except Exception as send_error:
+                    debug_log(f"❌ [WebSocketBridge] Failed to send message via WebSocket", {
+                        "msg_id": msg_id,
+                        "instance_id": instance_id,
+                        "kernel_id": kernel_id,
+                        "msg_type": msg_type,
+                        "error": str(send_error),
+                        "error_type": type(send_error).__name__
+                    })
+                    
+                    # Mark connection as failed
+                    if kernel_id in self.jupyter_connections:
+                        self.jupyter_connections[kernel_id]['websocket'] = None
+                    
+                    # Notify frontend about connection failure
+                    await self._notify_connection_status(kernel_id, 'failed')
+                    return False
                 
             else:
                 debug_log(f"❌ [WebSocketBridge] No valid connection type or WebSocket", {
@@ -506,29 +650,45 @@ class WebSocketBridge(LoggerMixin):
                 "kernel_id": kernel_id
             })
             
-            async for message in websocket:
+            # Start connection health monitoring
+            health_task = asyncio.create_task(self._monitor_connection_health(kernel_id, websocket))
+            
+            try:
+                async for message in websocket:
+                    try:
+                        # Parse message
+                        if isinstance(message, str):
+                            data = json.loads(message)
+                        else:
+                            data = message
+                        
+                        # Extract channel from message according to Jupyter WebSocket protocol
+                        # The channel is encoded in the message structure
+                        channel = data.get('channel', 'shell')  # Default to shell if not specified
+                        
+                        # Remove channel from data to get the actual Jupyter message
+                        jupyter_message = {k: v for k, v in data.items() if k != 'channel'}
+                        
+                        await self._handle_jupyter_message(kernel_id, jupyter_message, channel)
+                        
+                    except json.JSONDecodeError as e:
+                        debug_log(f"❌ [WebSocketBridge] Failed to parse Jupyter message", {
+                            "kernel_id": kernel_id,
+                            "error": str(e)
+                        })
+                    except Exception as e:
+                        debug_log(f"❌ [WebSocketBridge] Error handling Jupyter message", {
+                            "kernel_id": kernel_id,
+                            "error": str(e),
+                            "error_type": type(e).__name__
+                        })
+            finally:
+                # Cancel health monitoring task
+                health_task.cancel()
                 try:
-                    # Parse message
-                    if isinstance(message, str):
-                        data = json.loads(message)
-                    else:
-                        data = message
-                    
-                    # Process message - determine the correct channel based on message type
-                    channel = self._get_target_channel(data.get('header', {}).get('msg_type', 'unknown'))
-                    await self._handle_jupyter_message(kernel_id, data, channel)
-                    
-                except json.JSONDecodeError as e:
-                    debug_log(f"❌ [WebSocketBridge] Failed to parse Jupyter message", {
-                        "kernel_id": kernel_id,
-                        "error": str(e)
-                    })
-                except Exception as e:
-                    debug_log(f"❌ [WebSocketBridge] Error handling Jupyter message", {
-                        "kernel_id": kernel_id,
-                        "error": str(e),
-                        "error_type": type(e).__name__
-                    })
+                    await health_task
+                except asyncio.CancelledError:
+                    pass
                     
         except WebSocketException as e:
             debug_log(f"🔌 [WebSocketBridge] WebSocket connection closed", {
@@ -549,6 +709,83 @@ class WebSocketBridge(LoggerMixin):
                 "error": str(e),
                 "error_type": type(e).__name__
             })
+
+    async def _monitor_connection_health(self, kernel_id: str, websocket):
+        """Monitor WebSocket connection health and handle reconnection."""
+        try:
+            while True:
+                await asyncio.sleep(60)  # Check every minute
+                
+                # Check if websocket is still open
+                if websocket.closed:
+                    debug_log(f"🔌 [WebSocketBridge] WebSocket connection closed, attempting reconnection", {
+                        "kernel_id": kernel_id
+                    })
+                    break
+                
+                # Send a ping to check connection health
+                try:
+                    pong_waiter = await websocket.ping()
+                    await asyncio.wait_for(pong_waiter, timeout=5.0)
+                    debug_log(f"💓 [WebSocketBridge] Connection health check passed", {
+                        "kernel_id": kernel_id
+                    })
+                except asyncio.TimeoutError:
+                    debug_log(f"⚠️ [WebSocketBridge] Connection health check timeout", {
+                        "kernel_id": kernel_id
+                    })
+                    break
+                except Exception as e:
+                    debug_log(f"❌ [WebSocketBridge] Connection health check failed", {
+                        "kernel_id": kernel_id,
+                        "error": str(e)
+                    })
+                    break
+                    
+        except asyncio.CancelledError:
+            debug_log(f"🔄 [WebSocketBridge] Connection health monitoring cancelled", {
+                "kernel_id": kernel_id
+            })
+            raise
+        except Exception as e:
+            debug_log(f"❌ [WebSocketBridge] Error in connection health monitoring", {
+                "kernel_id": kernel_id,
+                "error": str(e)
+            })
+
+    async def _notify_connection_status(self, kernel_id: str, status: str):
+        """Notify frontend about connection status changes."""
+        try:
+            if kernel_id in self.jupyter_connections:
+                instance_ids = self.jupyter_connections[kernel_id].get('instance_ids', [])
+                
+                for instance_id in instance_ids:
+                    if instance_id in self.frontend_connections:
+                        # Update frontend connection status
+                        self.frontend_connections[instance_id]['status'] = status
+                        
+                        # Notify frontend via broadcast callback
+                        if self.broadcast_callback:
+                            await self.broadcast_callback({
+                                'action': 'connection_status',
+                                'instance_id': instance_id,
+                                'kernel_id': kernel_id,
+                                'status': status,
+                                'timestamp': datetime.datetime.now().isoformat()
+                            })
+                            
+                        debug_log(f"📡 [WebSocketBridge] Connection status notification sent", {
+                            "instance_id": instance_id,
+                            "kernel_id": kernel_id,
+                            "status": status
+                        })
+                        
+        except Exception as e:
+            debug_log(f"❌ [WebSocketBridge] Error notifying connection status", {
+                "kernel_id": kernel_id,
+                "status": status,
+                "error": str(e)
+            })
     
     async def _handle_jupyter_message(self, kernel_id: str, message: Dict[str, Any], channel: str = 'shell'):
         """Handle incoming message from Jupyter server."""
@@ -558,6 +795,35 @@ class WebSocketBridge(LoggerMixin):
             msg_id = message.get('header', {}).get('msg_id', 'unknown')
             parent_header = message.get('parent_header', {})
             parent_msg_id = parent_header.get('msg_id') if parent_header else None
+            
+            # ✅ CRITICAL FIX: Check for duplicate message processing
+            if msg_id in self.processed_messages:
+                debug_log(f"🔄 [WebSocketBridge] Skipping duplicate message", {
+                    "kernel_id": kernel_id,
+                    "channel": channel,
+                    "msg_type": msg_type,
+                    "msg_id": msg_id
+                })
+                return
+            
+            # Add to processed messages set
+            self.processed_messages.add(msg_id)
+            
+            # For comm messages, also track by comm_id to prevent loops
+            if msg_type in ['comm_open', 'comm_msg', 'comm_close']:
+                comm_id = message.get('content', {}).get('comm_id')
+                if comm_id:
+                    if comm_id not in self.comm_message_tracker:
+                        self.comm_message_tracker[comm_id] = set()
+                    self.comm_message_tracker[comm_id].add(msg_id)
+                    
+                    debug_log(f"🔗 [WebSocketBridge] Tracking comm message", {
+                        "kernel_id": kernel_id,
+                        "comm_id": comm_id,
+                        "msg_type": msg_type,
+                        "msg_id": msg_id,
+                        "total_tracked": len(self.comm_message_tracker[comm_id])
+                    })
             
             debug_log(f"📥 [WebSocketBridge] Jupyter message received", {
                 "kernel_id": kernel_id,
@@ -575,17 +841,27 @@ class WebSocketBridge(LoggerMixin):
             elif parent_msg_id and parent_msg_id in self.pending_messages:
                 response_to_msg_id = parent_msg_id
             
+            # Handle pending message response (but don't return early!)
             if response_to_msg_id:
                 await self._handle_response(response_to_msg_id, message)
-                return
+                # ✅ CRITICAL FIX: Don't return here! Continue to forward the message
             
-            # Handle different message types
+            # Handle different message types according to Jupyter protocol
             if msg_type == 'status':
                 await self._handle_status_update(kernel_id, message)
             elif msg_type == 'kernel_info_reply':
                 await self._handle_kernel_info(kernel_id, message)
+            elif msg_type == 'comm_msg':
+                # Handle comm messages and send echo responses
+                await self._handle_comm_message(kernel_id, message, channel)
+            elif msg_type == 'comm_open':
+                # Handle comm open messages
+                await self._handle_comm_open(kernel_id, message, channel)
+            elif msg_type == 'comm_close':
+                # Handle comm close messages
+                await self._handle_comm_close(kernel_id, message, channel)
             else:
-                # Forward other messages to frontend
+                # Forward all other messages to frontend with proper channel information
                 await self._forward_to_frontend(kernel_id, message, channel)
                 
         except Exception as e:
@@ -685,6 +961,158 @@ class WebSocketBridge(LoggerMixin):
                 "error_type": type(e).__name__
             })
     
+    async def _handle_comm_message(self, kernel_id: str, message: Dict[str, Any], channel: str):
+        """Handle comm messages and send echo responses."""
+        try:
+            content = message.get('content', {})
+            comm_id = content.get('comm_id')
+            data = content.get('data', {})
+            method = data.get('method')
+            msg_id = message.get('header', {}).get('msg_id')
+            
+            debug_log(f"🔗 [WebSocketBridge] Comm message received", {
+                "kernel_id": kernel_id,
+                "comm_id": comm_id,
+                "method": method,
+                "channel": channel,
+                "msg_id": msg_id,
+                "direction": "kernel_to_frontend" if channel == 'iopub' else "frontend_to_kernel"
+            })
+            
+            # Track the most recent comm message for this kernel
+            if channel == 'shell':
+                self.most_recent_comm_messages[kernel_id] = {
+                    'msg_id': msg_id,
+                    'comm_id': comm_id,
+                    'method': method,
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+                debug_log(f"📝 [WebSocketBridge] Updated most recent comm message for kernel", {
+                    "kernel_id": kernel_id,
+                    "msg_id": msg_id,
+                    "comm_id": comm_id,
+                    "method": method
+                })
+            
+            # Forward the original comm message to frontend
+            await self._forward_to_frontend(kernel_id, message, channel)
+            
+            # If this is a frontend-to-kernel update message, send an echo response
+            if channel == 'shell' and method == 'update':
+                original_msg_id = message.get('header', {}).get('msg_id')
+                await self._send_comm_echo_response(kernel_id, comm_id, data.get('state', {}), original_msg_id)
+            
+        except Exception as e:
+            debug_log(f"❌ [WebSocketBridge] Error handling comm message", {
+                "kernel_id": kernel_id,
+                "channel": channel,
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+    
+    async def _handle_comm_open(self, kernel_id: str, message: Dict[str, Any], channel: str):
+        """Handle comm_open messages according to Jupyter protocol."""
+        try:
+            content = message.get('content', {})
+            comm_id = content.get('comm_id')
+            target_name = content.get('target_name')
+            data = content.get('data', {})
+            
+            debug_log(f"🔗 [WebSocketBridge] Comm open received", {
+                "kernel_id": kernel_id,
+                "comm_id": comm_id,
+                "target_name": target_name,
+                "channel": channel,
+                "direction": "kernel_to_frontend" if channel == 'iopub' else "frontend_to_kernel"
+            })
+            
+            # Forward the comm_open message to frontend
+            await self._forward_to_frontend(kernel_id, message, channel)
+            
+        except Exception as e:
+            debug_log(f"❌ [WebSocketBridge] Error handling comm_open", {
+                "kernel_id": kernel_id,
+                "channel": channel,
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+
+    async def _handle_comm_close(self, kernel_id: str, message: Dict[str, Any], channel: str):
+        """Handle comm_close messages according to Jupyter protocol."""
+        try:
+            content = message.get('content', {})
+            comm_id = content.get('comm_id')
+            data = content.get('data', {})
+            
+            debug_log(f"🔗 [WebSocketBridge] Comm close received", {
+                "kernel_id": kernel_id,
+                "comm_id": comm_id,
+                "channel": channel,
+                "direction": "kernel_to_frontend" if channel == 'iopub' else "frontend_to_kernel"
+            })
+            
+            # Forward the comm_close message to frontend
+            await self._forward_to_frontend(kernel_id, message, channel)
+            
+        except Exception as e:
+            debug_log(f"❌ [WebSocketBridge] Error handling comm_close", {
+                "kernel_id": kernel_id,
+                "channel": channel,
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+
+    async def _send_comm_echo_response(self, kernel_id: str, comm_id: str, state: Dict[str, Any], original_msg_id: str = None):
+        """Send an echo response for a comm message."""
+        try:
+            # Create echo response message
+            echo_msg = {
+                'header': {
+                    'msg_id': f"comm_echo_{uuid.uuid4().hex[:8]}",
+                    'msg_type': 'comm_msg',
+                    'session': 'session',
+                    'username': 'user',
+                    'version': '5.3',
+                    'date': datetime.datetime.now().isoformat()
+                },
+                'parent_header': {
+                    'msg_id': original_msg_id or f"comm_{comm_id}",
+                    'msg_type': 'comm_msg',
+                    'session': 'session',
+                    'username': 'user',
+                    'version': '5.3',
+                    'date': datetime.datetime.now().isoformat()
+                },
+                'metadata': {},
+                'content': {
+                    'comm_id': comm_id,
+                    'data': {
+                        'method': 'echo_update',
+                        'state': state
+                    }
+                },
+                'buffers': [],
+                'channel': 'iopub'  # Echo responses go to IOPub channel
+            }
+            
+            debug_log(f"🔄 [WebSocketBridge] Sending comm echo response", {
+                "kernel_id": kernel_id,
+                "comm_id": comm_id,
+                "state": state,
+                "channel": "iopub"
+            })
+            
+            # Forward echo response to frontend on IOPub channel
+            await self._forward_to_frontend(kernel_id, echo_msg, 'iopub')
+            
+        except Exception as e:
+            debug_log(f"❌ [WebSocketBridge] Error sending comm echo response", {
+                "kernel_id": kernel_id,
+                "comm_id": comm_id,
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+    
     async def _forward_to_frontend(self, kernel_id: str, message: Dict[str, Any], channel: str = 'shell'):
         """Forward message from Jupyter to frontend via WebRTC."""
         try:
@@ -697,8 +1125,14 @@ class WebSocketBridge(LoggerMixin):
             session_id = message.get('header', {}).get('session')
             if session_id:
                 debug_log(f"🔍 [WebSocketBridge] Message has session ID: {session_id}")
+
+                debug_log(f"🔍 [WebSocketBridge] Frontend connections", {
+                    "frontend_connections": self.frontend_connections
+                })
                 
                 # Look for a frontend connection that matches this session
+
+                # frontend_connections is a dictionary of we
                 for frontend_instance_id, frontend_info in self.frontend_connections.items():
                     if frontend_info.get('session_id') == session_id:
                         instance_id = frontend_instance_id
@@ -737,15 +1171,47 @@ class WebSocketBridge(LoggerMixin):
                 })
                 return
             
-            # Add channel information to the message
+            # Add channel information to the message according to Jupyter WebSocket protocol
+            # The channel must be encoded in the message structure as per Jupyter specification
             message_with_channel = {
                 'action': 'websocket_message',
                 'instanceId': instance_id,  # Use the actual instance ID
                 'kernelId': kernel_id,
-                'data': message,
-                'channel': channel,
-                'timestamp': datetime.datetime.now().isoformat()
+                'channel': channel,  # Channel name must be encoded in WebSocket messages
+                'timestamp': datetime.datetime.now().isoformat(),
+                # Include the original Jupyter message with channel information
+                'msg': {
+                    'channel': channel,  # Channel name as per Jupyter protocol
+                    'header': message.get('header', {}),
+                    'parent_header': message.get('parent_header', {}),
+                    'metadata': message.get('metadata', {}),
+                    'content': message.get('content', {}),
+                    'buffers': message.get('buffers', [])
+                }
             }
+            
+            # If this is an output message (stream, clear_output, etc.) and we have a recent comm message,
+            # add the comm message info to help with routing
+            msg_type = message.get('header', {}).get('msg_type')
+            if msg_type in ['stream', 'clear_output', 'display_data', 'execute_result'] and kernel_id in self.most_recent_comm_messages:
+                recent_comm = self.most_recent_comm_messages[kernel_id]
+                time_since_comm = (datetime.datetime.now() - datetime.datetime.fromisoformat(recent_comm['timestamp'])).total_seconds()
+                
+                # Only include if the comm message was recent (within 10 seconds)
+                if time_since_comm < 10:
+                    message_with_channel['recent_comm_info'] = {
+                        'msg_id': recent_comm['msg_id'],
+                        'comm_id': recent_comm['comm_id'],
+                        'method': recent_comm['method'],
+                        'time_since_comm': time_since_comm
+                    }
+                    debug_log(f"📝 [WebSocketBridge] Added recent comm info to output message", {
+                        "kernel_id": kernel_id,
+                        "msg_type": msg_type,
+                        "recent_comm_msg_id": recent_comm['msg_id'],
+                        "recent_comm_id": recent_comm['comm_id'],
+                        "time_since_comm": time_since_comm
+                    })
             
             # debug_log(f"📤 [WebSocketBridge] Prepared message for frontend", {
             #     "message_structure": message_with_channel,
@@ -983,6 +1449,70 @@ class WebSocketBridge(LoggerMixin):
             
         except Exception as e:
             debug_log(f"❌ [WebSocketBridge] Error during cleanup", {
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+
+    async def _cleanup_old_messages(self):
+        """Clean up old processed messages to prevent memory leaks."""
+        try:
+            # Keep only the last 1000 processed messages
+            if len(self.processed_messages) > 1000:
+                # Convert to list and keep only the most recent 1000
+                processed_list = list(self.processed_messages)
+                self.processed_messages = set(processed_list[-1000:])
+                
+                debug_log(f"🧹 [WebSocketBridge] Cleaned up processed messages", {
+                    "old_count": len(processed_list),
+                    "new_count": len(self.processed_messages)
+                })
+            
+            # Clean up comm message tracker (keep only active comms)
+            if len(self.comm_message_tracker) > 100:
+                # Remove comms with no recent activity
+                current_time = datetime.datetime.now()
+                comms_to_remove = []
+                
+                for comm_id, msg_ids in self.comm_message_tracker.items():
+                    if len(msg_ids) > 50:  # Too many messages for one comm
+                        comms_to_remove.append(comm_id)
+                
+                for comm_id in comms_to_remove:
+                    del self.comm_message_tracker[comm_id]
+                
+                if comms_to_remove:
+                    debug_log(f"🧹 [WebSocketBridge] Cleaned up comm message tracker", {
+                        "removed_comms": len(comms_to_remove),
+                        "remaining_comms": len(self.comm_message_tracker)
+                    })
+                    
+        except Exception as e:
+            debug_log(f"❌ [WebSocketBridge] Error during message cleanup", {
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+
+    async def _cleanup_kernel_messages(self, kernel_id: str):
+        """Clean up message tracking for a specific kernel."""
+        try:
+            # Remove pending messages for this kernel
+            pending_to_remove = []
+            for msg_id, pending_msg in self.pending_messages.items():
+                if pending_msg.get('kernel_id') == kernel_id:
+                    pending_to_remove.append(msg_id)
+            
+            for msg_id in pending_to_remove:
+                del self.pending_messages[msg_id]
+            
+            if pending_to_remove:
+                debug_log(f"🧹 [WebSocketBridge] Cleaned up pending messages for kernel", {
+                    "kernel_id": kernel_id,
+                    "removed_count": len(pending_to_remove)
+                })
+                
+        except Exception as e:
+            debug_log(f"❌ [WebSocketBridge] Error cleaning up kernel messages", {
+                "kernel_id": kernel_id,
                 "error": str(e),
                 "error_type": type(e).__name__
             })

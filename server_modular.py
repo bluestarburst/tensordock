@@ -328,8 +328,8 @@ async def handle_status(request):
 async def main():
     """Main server function."""
     try:
-        # Setup logging
-        setup_logging()
+        # Setup logging with file output
+        logger = setup_logging(log_file="tensordock_server.log")
         debug_log(f"🚀 [Main] Starting Modular TensorDock Server")
         
         # Create server instance

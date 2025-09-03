@@ -3,17 +3,33 @@ Centralized logging setup for TensorDock server.
 """
 import logging
 import datetime
+import os
 from typing import Any, Optional, Dict
 
 
-def setup_logging(level: str = "INFO") -> logging.Logger:
-    """Setup logging configuration."""
+def setup_logging(level: str = "INFO", log_file: str = "tensordock_server.log") -> logging.Logger:
+    """Setup logging configuration with file output."""
+    # Create logs directory if it doesn't exist
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    
+    log_path = os.path.join(log_dir, log_file)
+    
+    # Configure logging to write to both file and console
     logging.basicConfig(
         level=getattr(logging, level.upper()),
         format='%(asctime)s [%(levelname)s] %(message)s',
-        datefmt='%H:%M:%S'
+        datefmt='%H:%M:%S',
+        handlers=[
+            logging.FileHandler(log_path, mode='a', encoding='utf-8'),
+            logging.StreamHandler()  # Console output
+        ]
     )
-    return logging.getLogger("tensordock")
+    
+    logger = logging.getLogger("tensordock")
+    logger.info(f"Logging initialized - output will be written to: {log_path}")
+    
+    return logger
 
 
 def debug_log(message: str, data: Optional[Any] = None, level: str = "INFO") -> None:
