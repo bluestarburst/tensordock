@@ -93,6 +93,7 @@ class ActionProcessor(LoggerMixin):
     def _register_default_handlers(self):
         """Register default action handlers."""
         self.register_handler('execute_code', self._handle_execute_code)
+        self.register_handler('execute_request', self._handle_execute_request)
         self.register_handler('comm_msg', self._handle_comm_msg)
         self.register_handler('kernel_message', self._handle_kernel_message)
         self.register_handler('start_kernel', self._handle_start_kernel)
@@ -218,6 +219,21 @@ class ActionProcessor(LoggerMixin):
         
         return execution_count
     
+    async def _handle_execute_request(self, action: Dict[str, Any]):
+        """Handle an execute_request message from the frontend."""
+        if not self.websocket_bridge:
+            raise Exception("WebSocket bridge not available")
+
+        instance_id = action.get('instanceId')
+        kernel_id = action.get('kernelId')
+        jupyter_message = action
+
+        if not instance_id or not kernel_id:
+            raise ValueError("Missing instanceId or kernelId in execute_request")
+
+        await self.websocket_bridge.send_message(instance_id, kernel_id, jupyter_message)
+        return {"status": "ok", "action": "execute_request_sent"}
+    
     async def _handle_comm_msg(self, action: Dict[str, Any]):
         """Handle comm message action with proper Jupyter integration."""
         instance_id = action.get('instanceId')
@@ -267,16 +283,36 @@ class ActionProcessor(LoggerMixin):
             "msg_id": msg_id
         })
         
+        # ✅ ENHANCED: Validate Jupyter message structure
+        if not self._validate_jupyter_message(jupyter_message):
+            debug_log(f"❌ [ActionProcessor] Invalid Jupyter message structure", {
+                "instance_id": instance_id,
+                "kernel_id": kernel_id,
+                "msg_id": msg_id
+            })
+            return {"success": False, "error": "Invalid Jupyter message structure"}
+        
         # Forward to WebSocket bridge for proper Jupyter handling
         if self.websocket_bridge:
             success = await self.websocket_bridge.send_message(instance_id, kernel_id, jupyter_message)
             if not success:
                 debug_log(f"❌ [ActionProcessor] Failed to forward comm message to Jupyter")
+                return {"success": False, "error": "Failed to forward to Jupyter kernel"}
         
         # Also track in widget service for state management
         if self.widget_service:
             try:
-                await self.widget_service.handle_jupyter_comm_message(kernel_id, jupyter_message)
+                result = await self.widget_service.handle_jupyter_comm_message(kernel_id, jupyter_message)
+                
+                if result.get('success') and self.broadcast_callback:
+                    await self.broadcast_callback({
+                        'action': 'comm_msg_processed',
+                        'comm_id': comm_id,
+                        'msg_type': jupyter_message.get('header', {}).get('msg_type'),
+                        'result': result
+                    })
+                
+                return result
             except AttributeError:
                 # Fallback to legacy method if enhanced widget service not available
                 data = jupyter_message.get('content', {}).get('data', {})
@@ -293,6 +329,45 @@ class ActionProcessor(LoggerMixin):
                 return result
         
         return {"success": True, "message": "Comm message processed via WebSocket bridge"}
+    
+    def _validate_jupyter_message(self, message: Dict[str, Any]) -> bool:
+        """Validate Jupyter message structure."""
+        try:
+            # Check required top-level fields
+            if not isinstance(message, dict):
+                return False
+            
+            # Check header
+            header = message.get('header', {})
+            if not isinstance(header, dict):
+                return False
+            
+            required_header_fields = ['msg_id', 'msg_type', 'session', 'username', 'version', 'date']
+            for field in required_header_fields:
+                if field not in header:
+                    debug_log(f"❌ [ActionProcessor] Missing header field: {field}")
+                    return False
+            
+            # Check content
+            content = message.get('content', {})
+            if not isinstance(content, dict):
+                return False
+            
+            # Check metadata
+            metadata = message.get('metadata', {})
+            if not isinstance(metadata, dict):
+                return False
+            
+            # Check buffers
+            buffers = message.get('buffers', [])
+            if not isinstance(buffers, list):
+                return False
+            
+            return True
+            
+        except Exception as e:
+            debug_log(f"❌ [ActionProcessor] Message validation error: {e}")
+            return False
     
     async def _handle_kernel_message(self, action: Dict[str, Any]) -> bool:
         """Handle kernel message action via WebSocket bridge."""
@@ -320,6 +395,21 @@ class ActionProcessor(LoggerMixin):
             return False
         
         try:
+            # ✅ CRITICAL FIX: Handle both string and dict data formats
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                    debug_log(f"🔍 [ActionProcessor] Parsed string data to JSON", {
+                        "data_type": "string->dict",
+                        "data_keys": list(data.keys()) if isinstance(data, dict) else "not dict"
+                    })
+                except json.JSONDecodeError as e:
+                    debug_log(f"❌ [ActionProcessor] Failed to parse string data as JSON", {
+                        "error": str(e),
+                        "data_preview": data[:100] if len(data) > 100 else data
+                    })
+                    return False
+            
             # Extract message details from the Jupyter message data
             msg_type = data.get('header', {}).get('msg_type', 'unknown')
             msg_id = data.get('header', {}).get('msg_id', 'unknown')

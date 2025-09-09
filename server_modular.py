@@ -85,6 +85,7 @@ class ModularTensorDockServer:
         
         # Set up message broker routing rules
         self.message_broker.add_routing_rule('execute_code', 'action')
+        self.message_broker.add_routing_rule('execute_request', 'action')
         self.message_broker.add_routing_rule('comm_msg', 'action')
         self.message_broker.add_routing_rule('kernel_message', 'action')
         self.message_broker.add_routing_rule('input', 'input')
@@ -98,6 +99,7 @@ class ModularTensorDockServer:
         
         # Register action handlers with worker manager
         self.worker_manager.register_task_handler('execute_code', self.action_processor._handle_execute_code)
+        self.worker_manager.register_task_handler('execute_request', self.action_processor._handle_execute_request)
         self.worker_manager.register_task_handler('comm_msg', self.action_processor._handle_comm_msg)
         self.worker_manager.register_task_handler('kernel_message', self.action_processor._handle_kernel_message)
         self.worker_manager.register_task_handler('start_kernel', self.action_processor._handle_start_kernel)
@@ -124,6 +126,7 @@ class ModularTensorDockServer:
             actions = [
                 'sudo_http_request',
                 'execute_code',
+                'execute_request',
                 'comm_msg',
                 'kernel_message',
                 'input',

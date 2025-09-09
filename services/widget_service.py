@@ -43,6 +43,80 @@ class WidgetService(LoggerMixin):
         
         debug_log(f"🎛️ [Widget] Widget service initialized")
     
+    async def handle_jupyter_comm_message(self, kernel_id: str, jupyter_message: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle Jupyter comm messages with proper protocol compliance."""
+        try:
+            header = jupyter_message.get('header', {})
+            content = jupyter_message.get('content', {})
+            metadata = jupyter_message.get('metadata', {})
+            buffers = jupyter_message.get('buffers', [])
+            
+            msg_type = header.get('msg_type')
+            comm_id = content.get('comm_id')
+            msg_id = header.get('msg_id')
+            
+            debug_log(f"🎛️ [Widget] Processing Jupyter comm message", {
+                "kernel_id": kernel_id,
+                "msg_type": msg_type,
+                "comm_id": comm_id,
+                "msg_id": msg_id,
+                "has_buffers": len(buffers) > 0
+            })
+            
+            # Validate required fields
+            if not msg_type:
+                raise ValueError("Missing msg_type in Jupyter message header")
+            if not comm_id:
+                raise ValueError("Missing comm_id in Jupyter message content")
+            
+            # Extract client_id from metadata or use kernel_id as fallback
+            client_id = metadata.get('client_id', kernel_id)
+            
+            # Create data structure for legacy handler
+            data = {
+                'msg_type': msg_type,
+                'target_name': content.get('target_name'),
+                'data': content.get('data', {}),
+                'metadata': metadata
+            }
+            
+            # Route to appropriate handler
+            if msg_type == 'comm_open':
+                result = await self._handle_comm_open(comm_id, data, client_id)
+            elif msg_type == 'comm_msg':
+                result = await self._handle_comm_msg(comm_id, data, client_id)
+            elif msg_type == 'comm_close':
+                result = await self._handle_comm_close(comm_id, data, client_id)
+            else:
+                result = await self._handle_unknown_comm_msg(comm_id, data, client_id)
+            
+            # Store Jupyter message for tracking
+            if comm_id not in self.comm_messages:
+                self.comm_messages[comm_id] = []
+            
+            self.comm_messages[comm_id].append({
+                'timestamp': datetime.datetime.now().isoformat(),
+                'kernel_id': kernel_id,
+                'msg_type': msg_type,
+                'msg_id': msg_id,
+                'jupyter_message': jupyter_message,
+                'result': result
+            })
+            
+            return result
+            
+        except Exception as e:
+            debug_log(f"❌ [Widget] Jupyter comm message handling error", {
+                "kernel_id": kernel_id,
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+            return {
+                'success': False,
+                'error': str(e),
+                'error_type': type(e).__name__
+            }
+    
     async def handle_comm_message(self, comm_id: str, data: Dict[str, Any], client_id: str) -> Dict[str, Any]:
         """Handle incoming comm message from a client."""
         try:
@@ -99,9 +173,16 @@ class WidgetService(LoggerMixin):
     async def _handle_comm_open(self, comm_id: str, data: Dict[str, Any], client_id: str) -> Dict[str, Any]:
         """Handle comm_open message for widget initialization."""
         try:
-            # Extract widget information
+            # ✅ ENHANCED: Extract widget information with proper validation
             target_name = data.get('target_name', 'jupyter.widget')
             model_id = data.get('model_id', comm_id)
+            comm_data = data.get('data', {})
+            
+            # Validate required fields
+            if not comm_id:
+                raise ValueError("comm_id is required for comm_open")
+            if not target_name:
+                raise ValueError("target_name is required for comm_open")
             
             # Create widget state
             self.widget_states[comm_id] = {
@@ -111,7 +192,9 @@ class WidgetService(LoggerMixin):
                 'client_id': client_id,
                 'status': 'open',
                 'created_at': datetime.datetime.now().isoformat(),
-                'last_activity': datetime.datetime.now().isoformat()
+                'last_activity': datetime.datetime.now().isoformat(),
+                'initial_data': comm_data,
+                'message_count': 0
             }
             
             # Create comm manager
@@ -120,7 +203,8 @@ class WidgetService(LoggerMixin):
                 'client_id': client_id,
                 'status': 'active',
                 'message_count': 0,
-                'created_at': datetime.datetime.now().isoformat()
+                'created_at': datetime.datetime.now().isoformat(),
+                'target_name': target_name
             }
             
             # Associate with client
@@ -131,7 +215,8 @@ class WidgetService(LoggerMixin):
                 "client_id": client_id,
                 "comm_id": comm_id,
                 "target_name": target_name,
-                "model_id": model_id
+                "model_id": model_id,
+                "initial_data_keys": list(comm_data.keys()) if comm_data else []
             })
             
             return {
@@ -152,10 +237,29 @@ class WidgetService(LoggerMixin):
     async def _handle_comm_msg(self, comm_id: str, data: Dict[str, Any], client_id: str) -> Dict[str, Any]:
         """Handle comm_msg message for widget communication."""
         try:
+            # ✅ ENHANCED: Better validation and error handling
             if comm_id not in self.widget_states:
+                debug_log(f"⚠️ [Widget] Comm not found for comm_msg", {
+                    "comm_id": comm_id,
+                    "client_id": client_id,
+                    "available_comms": list(self.widget_states.keys())
+                })
                 return {
                     'success': False,
-                    'error': 'Comm not found'
+                    'error': f'Comm {comm_id} not found',
+                    'comm_id': comm_id
+                }
+            
+            # Validate comm is in open state
+            if self.widget_states[comm_id]['status'] != 'open':
+                debug_log(f"⚠️ [Widget] Comm not in open state", {
+                    "comm_id": comm_id,
+                    "status": self.widget_states[comm_id]['status']
+                })
+                return {
+                    'success': False,
+                    'error': f'Comm {comm_id} is not open (status: {self.widget_states[comm_id]["status"]})',
+                    'comm_id': comm_id
                 }
             
             # Update widget state
@@ -173,14 +277,16 @@ class WidgetService(LoggerMixin):
                 "client_id": client_id,
                 "comm_id": comm_id,
                 "message_data_keys": list(message_data.keys()) if message_data else [],
-                "message_count": self.widget_states[comm_id]['message_count']
+                "message_count": self.widget_states[comm_id]['message_count'],
+                "target_name": self.widget_states[comm_id].get('target_name')
             })
             
             return {
                 'success': True,
                 'comm_id': comm_id,
                 'operation': 'comm_msg',
-                'message_data': message_data
+                'message_data': message_data,
+                'message_count': self.widget_states[comm_id]['message_count']
             }
             
         except Exception as e:
@@ -194,15 +300,27 @@ class WidgetService(LoggerMixin):
     async def _handle_comm_close(self, comm_id: str, data: Dict[str, Any], client_id: str) -> Dict[str, Any]:
         """Handle comm_close message for widget cleanup."""
         try:
+            # ✅ ENHANCED: Better validation and cleanup
             if comm_id not in self.widget_states:
+                debug_log(f"⚠️ [Widget] Comm not found for comm_close", {
+                    "comm_id": comm_id,
+                    "client_id": client_id,
+                    "available_comms": list(self.widget_states.keys())
+                })
                 return {
                     'success': False,
-                    'error': 'Comm not found'
+                    'error': f'Comm {comm_id} not found',
+                    'comm_id': comm_id
                 }
+            
+            # Get comm data before cleanup
+            comm_data = data.get('data', {})
+            widget_state = self.widget_states[comm_id].copy()
             
             # Update widget state
             self.widget_states[comm_id]['status'] = 'closed'
             self.widget_states[comm_id]['closed_at'] = datetime.datetime.now().isoformat()
+            self.widget_states[comm_id]['close_data'] = comm_data
             
             # Update comm manager
             self.comm_managers[comm_id]['status'] = 'closed'
@@ -216,13 +334,18 @@ class WidgetService(LoggerMixin):
             
             debug_log(f"✅ [Widget] Comm closed", {
                 "client_id": client_id,
-                "comm_id": comm_id
+                "comm_id": comm_id,
+                "target_name": widget_state.get('target_name'),
+                "message_count": widget_state.get('message_count', 0),
+                "close_data_keys": list(comm_data.keys()) if comm_data else []
             })
             
             return {
                 'success': True,
                 'comm_id': comm_id,
-                'operation': 'comm_close'
+                'operation': 'comm_close',
+                'widget_state': widget_state,
+                'close_data': comm_data
             }
             
         except Exception as e:

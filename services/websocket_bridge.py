@@ -451,8 +451,6 @@ class WebSocketBridge(LoggerMixin):
             'history_request': 'shell',
             'is_complete_request': 'shell',
             'comm_info_request': 'shell',
-            'comm_msg': 'shell',  # Frontend → Kernel: Shell channel
-            'comm_close': 'shell',  # Frontend → Kernel: Shell channel
             
             # Control channel (interrupt, restart, shutdown)
             'interrupt_request': 'control',
@@ -586,18 +584,9 @@ class WebSocketBridge(LoggerMixin):
                 })
                 
                 try:
-                    # Encode message with channel information according to Jupyter WebSocket protocol
-                    # The channel must be included in the message structure
-                    message_with_channel = {
-                        'channel': target_channel,  # Channel name must be encoded
-                        'header': data.get('header', {}),
-                        'parent_header': data.get('parent_header', {}),
-                        'metadata': data.get('metadata', {}),
-                        'content': data.get('content', {}),
-                        'buffers': data.get('buffers', [])
-                    }
-                    
-                    await websocket.send(json.dumps(message_with_channel))
+                    # Send the complete Jupyter message structure to the server
+                    # The Jupyter server expects the standard message format
+                    await websocket.send(json.dumps(data))
                 except Exception as send_error:
                     debug_log(f"❌ [WebSocketBridge] Failed to send message via WebSocket", {
                         "msg_id": msg_id,
@@ -662,14 +651,13 @@ class WebSocketBridge(LoggerMixin):
                         else:
                             data = message
                         
-                        # Extract channel from message according to Jupyter WebSocket protocol
-                        # The channel is encoded in the message structure
-                        channel = data.get('channel', 'shell')  # Default to shell if not specified
+                        # The Jupyter server sends standard Jupyter messages
+                        # We need to determine the channel based on message type
+                        msg_type = data.get('header', {}).get('msg_type', 'unknown')
+                        channel = self._get_target_channel(msg_type)
                         
-                        # Remove channel from data to get the actual Jupyter message
-                        jupyter_message = {k: v for k, v in data.items() if k != 'channel'}
-                        
-                        await self._handle_jupyter_message(kernel_id, jupyter_message, channel)
+                        # Forward the complete Jupyter message
+                        await self._handle_jupyter_message(kernel_id, data, channel)
                         
                     except json.JSONDecodeError as e:
                         debug_log(f"❌ [WebSocketBridge] Failed to parse Jupyter message", {
@@ -795,6 +783,20 @@ class WebSocketBridge(LoggerMixin):
             msg_id = message.get('header', {}).get('msg_id', 'unknown')
             parent_header = message.get('parent_header', {})
             parent_msg_id = parent_header.get('msg_id') if parent_header else None
+            
+            # ✅ CRITICAL DEBUG: Special logging for execute_input messages
+            if msg_type == 'execute_input':
+                debug_log(f"🔍 [WebSocketBridge] EXECUTE_INPUT MESSAGE RECEIVED FROM JUPYTER:", {
+                    "kernel_id": kernel_id,
+                    "channel": channel,
+                    "msg_type": msg_type,
+                    "msg_id": msg_id,
+                    "parent_msg_id": parent_msg_id,
+                    "execution_count": message.get('content', {}).get('execution_count'),
+                    "code": message.get('content', {}).get('code', '')[:50] + '...' if message.get('content', {}).get('code') else 'no code',
+                    "message_structure": message
+                })
+                print(f"🔍 [WebSocketBridge] EXECUTE_INPUT MESSAGE RECEIVED FROM JUPYTER: {msg_id}")
             
             # ✅ CRITICAL FIX: Check for duplicate message processing
             if msg_id in self.processed_messages:
@@ -964,34 +966,64 @@ class WebSocketBridge(LoggerMixin):
     async def _handle_comm_message(self, kernel_id: str, message: Dict[str, Any], channel: str):
         """Handle comm messages and send echo responses."""
         try:
+            # Extract message details first to avoid UnboundLocalError
+            msg_id = message.get('header', {}).get('msg_id', 'unknown')
+            msg_type = message.get('header', {}).get('msg_type', 'unknown')
+            parent_header = message.get('parent_header', {})
+            parent_msg_id = parent_header.get('msg_id') if parent_header else None
+            
             content = message.get('content', {})
             comm_id = content.get('comm_id')
             data = content.get('data', {})
             method = data.get('method')
-            msg_id = message.get('header', {}).get('msg_id')
+            
+            # ✅ FIXED: Correct channel routing logic
+            direction = "frontend_to_kernel" if channel == 'shell' else "kernel_to_frontend"
             
             debug_log(f"🔗 [WebSocketBridge] Comm message received", {
                 "kernel_id": kernel_id,
                 "comm_id": comm_id,
                 "method": method,
                 "channel": channel,
+                "msg_type": msg_type,
                 "msg_id": msg_id,
-                "direction": "kernel_to_frontend" if channel == 'iopub' else "frontend_to_kernel"
+                "parent_msg_id": parent_msg_id,
+                "direction": direction
             })
             
+            # ✅ CRITICAL FIX: Track parent message IDs for comm messages
+            if parent_msg_id:
+                if 'comm_parent_msgs' not in self.__dict__:
+                    self.comm_parent_msgs = {}
+                
+                if comm_id not in self.comm_parent_msgs:
+                    self.comm_parent_msgs[comm_id] = set()
+                
+                self.comm_parent_msgs[comm_id].add(parent_msg_id)
+                
+                debug_log(f"🔗 [WebSocketBridge] Tracked parent message for comm", {
+                    "comm_id": comm_id,
+                    "parent_msg_id": parent_msg_id,
+                    "total_parents": len(self.comm_parent_msgs[comm_id])
+                })
+            
             # Track the most recent comm message for this kernel
-            if channel == 'shell':
+            if channel == 'shell':  # Frontend → Kernel messages
                 self.most_recent_comm_messages[kernel_id] = {
                     'msg_id': msg_id,
                     'comm_id': comm_id,
                     'method': method,
+                    'msg_type': msg_type,
+                    'parent_msg_id': parent_msg_id,  # ✅ CRITICAL FIX: Also track parent_msg_id
                     'timestamp': datetime.datetime.now().isoformat()
                 }
                 debug_log(f"📝 [WebSocketBridge] Updated most recent comm message for kernel", {
                     "kernel_id": kernel_id,
                     "msg_id": msg_id,
                     "comm_id": comm_id,
-                    "method": method
+                    "method": method,
+                    "msg_type": msg_type,
+                    "parent_msg_id": parent_msg_id  # ✅ CRITICAL FIX: Log parent_msg_id
                 })
             
             # Forward the original comm message to frontend
@@ -1018,12 +1050,15 @@ class WebSocketBridge(LoggerMixin):
             target_name = content.get('target_name')
             data = content.get('data', {})
             
+            # ✅ FIXED: Correct channel routing logic
+            direction = "frontend_to_kernel" if channel == 'shell' else "kernel_to_frontend"
+            
             debug_log(f"🔗 [WebSocketBridge] Comm open received", {
                 "kernel_id": kernel_id,
                 "comm_id": comm_id,
                 "target_name": target_name,
                 "channel": channel,
-                "direction": "kernel_to_frontend" if channel == 'iopub' else "frontend_to_kernel"
+                "direction": direction
             })
             
             # Forward the comm_open message to frontend
@@ -1044,11 +1079,14 @@ class WebSocketBridge(LoggerMixin):
             comm_id = content.get('comm_id')
             data = content.get('data', {})
             
+            # ✅ FIXED: Correct channel routing logic
+            direction = "frontend_to_kernel" if channel == 'shell' else "kernel_to_frontend"
+            
             debug_log(f"🔗 [WebSocketBridge] Comm close received", {
                 "kernel_id": kernel_id,
                 "comm_id": comm_id,
                 "channel": channel,
-                "direction": "kernel_to_frontend" if channel == 'iopub' else "frontend_to_kernel"
+                "direction": direction
             })
             
             # Forward the comm_close message to frontend
@@ -1062,38 +1100,123 @@ class WebSocketBridge(LoggerMixin):
                 "error_type": type(e).__name__
             })
 
+    def _validate_jupyter_message(self, message: Dict[str, Any]) -> bool:
+        """Validate that a message follows the Jupyter protocol structure."""
+        try:
+            # Check required top-level fields
+            required_fields = ['header', 'parent_header', 'metadata', 'content', 'buffers']
+            for field in required_fields:
+                if field not in message:
+                    debug_log(f"❌ [WebSocketBridge] Missing required field in Jupyter message", {
+                        "field": field,
+                        "message_keys": list(message.keys())
+                    })
+                    return False
+            
+            # Check header structure
+            header = message.get('header', {})
+            required_header_fields = ['msg_id', 'msg_type', 'session', 'username', 'version', 'date']
+            for field in required_header_fields:
+                if field not in header:
+                    debug_log(f"❌ [WebSocketBridge] Missing required header field", {
+                        "field": field,
+                        "header_keys": list(header.keys())
+                    })
+                    return False
+            
+            # Validate msg_id is a string
+            if not isinstance(header.get('msg_id'), str):
+                debug_log(f"❌ [WebSocketBridge] msg_id must be a string", {
+                    "msg_id": header.get('msg_id'),
+                    "msg_id_type": type(header.get('msg_id'))
+                })
+                return False
+            
+            # Validate session is a string
+            if not isinstance(header.get('session'), str):
+                debug_log(f"❌ [WebSocketBridge] session must be a string", {
+                    "session": header.get('session'),
+                    "session_type": type(header.get('session'))
+                })
+                return False
+            
+            return True
+            
+        except Exception as e:
+            debug_log(f"❌ [WebSocketBridge] Error validating Jupyter message", {
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+            return False
+
+    def _create_jupyter_message(self, msg_type: str, content: Dict[str, Any], parent_header: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Create a properly formatted Jupyter message following the protocol."""
+        try:
+            # Generate proper UUIDs
+            msg_id = str(uuid.uuid4())
+            session_id = str(uuid.uuid4())
+            
+            # Create header
+            header = {
+                'msg_id': msg_id,
+                'msg_type': msg_type,
+                'session': session_id,
+                'username': 'kernel',
+                'version': '5.4',  # Current Jupyter protocol version
+                'date': datetime.datetime.now().isoformat()
+            }
+            
+            # Create parent header (copy of original message header)
+            parent_header = parent_header or {}
+            
+            # Create message
+            message = {
+                'header': header,
+                'parent_header': parent_header,
+                'metadata': {},
+                'content': content,
+                'buffers': []
+            }
+            
+            # Validate the message
+            if not self._validate_jupyter_message(message):
+                raise ValueError("Failed to create valid Jupyter message")
+            
+            return message
+            
+        except Exception as e:
+            debug_log(f"❌ [WebSocketBridge] Error creating Jupyter message", {
+                "msg_type": msg_type,
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+            raise
+
     async def _send_comm_echo_response(self, kernel_id: str, comm_id: str, state: Dict[str, Any], original_msg_id: str = None):
         """Send an echo response for a comm message."""
         try:
-            # Create echo response message
-            echo_msg = {
-                'header': {
-                    'msg_id': f"comm_echo_{uuid.uuid4().hex[:8]}",
-                    'msg_type': 'comm_msg',
-                    'session': 'session',
-                    'username': 'user',
-                    'version': '5.3',
-                    'date': datetime.datetime.now().isoformat()
-                },
-                'parent_header': {
-                    'msg_id': original_msg_id or f"comm_{comm_id}",
-                    'msg_type': 'comm_msg',
-                    'session': 'session',
-                    'username': 'user',
-                    'version': '5.3',
-                    'date': datetime.datetime.now().isoformat()
-                },
-                'metadata': {},
-                'content': {
-                    'comm_id': comm_id,
-                    'data': {
-                        'method': 'echo_update',
-                        'state': state
-                    }
-                },
-                'buffers': [],
-                'channel': 'iopub'  # Echo responses go to IOPub channel
+            # Create echo response message following Jupyter protocol
+            content = {
+                'comm_id': comm_id,
+                'data': {
+                    'method': 'echo_update',
+                    'state': state
+                }
             }
+            
+            # Create parent header if we have the original message ID
+            parent_header = None
+            if original_msg_id:
+                parent_header = {
+                    'msg_id': original_msg_id,
+                    'msg_type': 'comm_msg',
+                    'session': str(uuid.uuid4()),
+                    'username': 'kernel',
+                    'version': '5.4',
+                    'date': datetime.datetime.now().isoformat()
+                }
+            
+            echo_msg = self._create_jupyter_message('comm_msg', content, parent_header)
             
             debug_log(f"🔄 [WebSocketBridge] Sending comm echo response", {
                 "kernel_id": kernel_id,
@@ -1116,90 +1239,139 @@ class WebSocketBridge(LoggerMixin):
     async def _forward_to_frontend(self, kernel_id: str, message: Dict[str, Any], channel: str = 'shell'):
         """Forward message from Jupyter to frontend via WebRTC."""
         try:
+            # Extract message details first to avoid UnboundLocalError
+            msg_type = message.get('header', {}).get('msg_type', 'unknown')
+            session_id = message.get('header', {}).get('session')
+            msg_id = message.get('header', {}).get('msg_id', 'unknown')
+            
+            # ✅ CRITICAL FIX: Enhanced parent message tracking
+            parent_header = message.get('parent_header', {})
+            parent_msg_id = parent_header.get('msg_id') if parent_header else None
+            
+            # Special handling for clear_output messages to ensure proper parent_header preservation
+            if msg_type == 'clear_output' and parent_msg_id:
+                await self._track_clear_output_message(kernel_id, msg_id, parent_msg_id, message)
+            
+            # Validate the Jupyter message structure
+            if not self._validate_jupyter_message(message):
+                debug_log(f"❌ [WebSocketBridge] Invalid Jupyter message structure, skipping forward", {
+                    "kernel_id": kernel_id,
+                    "channel": channel,
+                    "message_keys": list(message.keys()) if isinstance(message, dict) else "not a dict"
+                })
+                return
             
             # Find the correct instance ID for this kernel
             instance_id = None
             
-            # CRITICAL: Jupyter messages have a session field, not kernel_id
-            # We need to map by session ID, not kernel ID
-            session_id = message.get('header', {}).get('session')
+            # First try to match by session ID if available
             if session_id:
                 debug_log(f"🔍 [WebSocketBridge] Message has session ID: {session_id}")
-
                 debug_log(f"🔍 [WebSocketBridge] Frontend connections", {
                     "frontend_connections": self.frontend_connections
                 })
                 
-                # Look for a frontend connection that matches this session
-
-                # frontend_connections is a dictionary of we
+                # Try to find a frontend connection with matching session ID
                 for frontend_instance_id, frontend_info in self.frontend_connections.items():
                     if frontend_info.get('session_id') == session_id:
                         instance_id = frontend_instance_id
-                        debug_log(f"🔍 [WebSocketBridge] Found instance {instance_id} for session {session_id}")
                         break
                 
                 if not instance_id:
                     debug_log(f"⚠️ [WebSocketBridge] No frontend instance found for session {session_id}")
-                    # Fall back to kernel_id mapping
-                    pass
             
-            # Fallback: Create a reverse mapping from kernel_id to instance_id
+            # If no match by session ID, use kernel ID mapping
             if not instance_id:
+                # Create a reverse mapping from kernel_id to instance_id
                 kernel_to_instance = {}
                 for frontend_instance_id, frontend_info in self.frontend_connections.items():
                     if frontend_info.get('kernel_id'):
                         kernel_to_instance[frontend_info['kernel_id']] = frontend_instance_id
-                        debug_log(f"🔍 [WebSocketBridge] Mapping kernel {frontend_info['kernel_id']} to instance {frontend_instance_id}")
                 
+                debug_log(f"🔍 [WebSocketBridge] Mapping kernel {kernel_id} to instance {kernel_to_instance.get(kernel_id)}")
                 debug_log(f"🔍 [WebSocketBridge] Kernel to instance mapping", {
                     "kernel_id": kernel_id,
                     "kernel_to_instance": kernel_to_instance,
                     "target_instance_id": kernel_to_instance.get(kernel_id),
-                    "all_kernel_ids": list(kernel_to_instance.keys())
+                    "all_kernel_ids": list(self.jupyter_connections.keys())
                 })
                 
-                # Look up the instance ID for this kernel
+                # Find the correct instance ID for this kernel
                 instance_id = kernel_to_instance.get(kernel_id)
             
             if not instance_id:
-                debug_log(f"⚠️ [WebSocketBridge] No frontend instance found for kernel", {
-                    "kernel_id": kernel_id,
-                    "available_instances": list(self.frontend_connections.keys()),
-                    "frontend_connections": self.frontend_connections,
-                    "kernel_to_instance_mapping": kernel_to_instance
-                })
+                debug_log(f"⚠️ [WebSocketBridge] No frontend instance found for kernel {kernel_id}")
                 return
             
-            # Add channel information to the message according to Jupyter WebSocket protocol
-            # The channel must be encoded in the message structure as per Jupyter specification
-            message_with_channel = {
+            # ✅ CRITICAL FIX: Ensure parent_header is properly preserved
+            # Some messages might have malformed parent_header, ensure it's properly structured
+            if 'parent_header' in message and message['parent_header'] is None:
+                message['parent_header'] = {}
+            
+            # Prepare message for frontend
+            message_for_frontend = {
                 'action': 'websocket_message',
-                'instanceId': instance_id,  # Use the actual instance ID
+                'instanceId': instance_id,
                 'kernelId': kernel_id,
-                'channel': channel,  # Channel name must be encoded in WebSocket messages
+                'channel': channel,
                 'timestamp': datetime.datetime.now().isoformat(),
-                # Include the original Jupyter message with channel information
-                'msg': {
-                    'channel': channel,  # Channel name as per Jupyter protocol
-                    'header': message.get('header', {}),
-                    'parent_header': message.get('parent_header', {}),
-                    'metadata': message.get('metadata', {}),
-                    'content': message.get('content', {}),
-                    'buffers': message.get('buffers', [])
-                }
+                'msg': message
             }
             
-            # If this is an output message (stream, clear_output, etc.) and we have a recent comm message,
+            # Add special debugging for execute_input messages
+            if msg_type == 'execute_input':
+                debug_log(f"🔍 [WebSocketBridge] FORWARDING EXECUTE_INPUT TO FRONTEND:", {
+                    "kernel_id": kernel_id,
+                    "instance_id": instance_id,
+                    "msg_type": msg_type,
+                    "msg_id": msg_id,
+                    "parent_msg_id": parent_msg_id,
+                    "channel": channel
+                })
+                print(f"🔍 [WebSocketBridge] FORWARDING EXECUTE_INPUT TO FRONTEND: {msg_id} -> {instance_id}")
+            
+            # ✅ CRITICAL FIX: Enhanced tracking for clear_output messages
+            if msg_type == 'clear_output':
+                debug_log(f"🔍 [WebSocketBridge] FORWARDING CLEAR_OUTPUT TO FRONTEND:", {
+                    "kernel_id": kernel_id,
+                    "instance_id": instance_id,
+                    "msg_type": msg_type,
+                    "msg_id": msg_id,
+                    "parent_msg_id": parent_msg_id,
+                    "channel": channel,
+                    "wait": message.get('content', {}).get('wait', False)
+                })
+                
+                # If we have a recent comm message, associate it with this clear_output
+                if kernel_id in self.most_recent_comm_messages:
+                    recent_comm = self.most_recent_comm_messages[kernel_id]
+                    time_since_comm = (datetime.datetime.now() - datetime.datetime.fromisoformat(recent_comm['timestamp'])).total_seconds()
+                    
+                    # Only include if the comm message was recent (within 10 seconds)
+                    if time_since_comm < 10:
+                        message_for_frontend['recent_comm_info'] = {
+                            'msg_id': recent_comm['msg_id'],
+                            'comm_id': recent_comm['comm_id'],
+                            'method': recent_comm['method'],
+                            'time_since_comm': time_since_comm
+                        }
+                        debug_log(f"📝 [WebSocketBridge] Added recent comm info to clear_output message", {
+                            "kernel_id": kernel_id,
+                            "msg_type": msg_type,
+                            "recent_comm_msg_id": recent_comm['msg_id'],
+                            "recent_comm_id": recent_comm['comm_id'],
+                            "time_since_comm": time_since_comm
+                        })
+            
+            # If this is an output message (stream, display_data, execute_result) and we have a recent comm message,
             # add the comm message info to help with routing
-            msg_type = message.get('header', {}).get('msg_type')
-            if msg_type in ['stream', 'clear_output', 'display_data', 'execute_result'] and kernel_id in self.most_recent_comm_messages:
+            elif msg_type in ['stream', 'display_data', 'execute_result'] and kernel_id in self.most_recent_comm_messages:
                 recent_comm = self.most_recent_comm_messages[kernel_id]
                 time_since_comm = (datetime.datetime.now() - datetime.datetime.fromisoformat(recent_comm['timestamp'])).total_seconds()
                 
                 # Only include if the comm message was recent (within 10 seconds)
                 if time_since_comm < 10:
-                    message_with_channel['recent_comm_info'] = {
+                    message_for_frontend['recent_comm_info'] = {
                         'msg_id': recent_comm['msg_id'],
                         'comm_id': recent_comm['comm_id'],
                         'method': recent_comm['method'],
@@ -1213,24 +1385,29 @@ class WebSocketBridge(LoggerMixin):
                         "time_since_comm": time_since_comm
                     })
             
-            # debug_log(f"📤 [WebSocketBridge] Prepared message for frontend", {
-            #     "message_structure": message_with_channel,
-            #     "instanceId": instance_id,
-            #     "kernelId": kernel_id,
-            #     "channel": channel
-            # })
-            
             # Broadcast to all connected frontend instances
             if self.broadcast_callback:
-                await self.broadcast_callback(message_with_channel)
+                await self.broadcast_callback(message_for_frontend)
+                
+                # Special logging for execute_input broadcast
+                if msg_type == 'execute_input':
+                    debug_log(f"🔍 [WebSocketBridge] EXECUTE_INPUT BROADCASTED TO FRONTEND:", {
+                        "kernel_id": kernel_id,
+                        "instance_id": instance_id,
+                        "msg_type": msg_type,
+                        "msg_id": msg_id,
+                        "parent_msg_id": parent_msg_id,
+                        "channel": channel,
+                        "broadcast_successful": True
+                    })
+                    print(f"🔍 [WebSocketBridge] EXECUTE_INPUT BROADCASTED TO FRONTEND: {msg_id}")
                 
                 debug_log(f"📤 [WebSocketBridge] Message forwarded to frontend", {
                     "kernel_id": kernel_id,
                     "instance_id": instance_id,
                     "instance_count": len(self.frontend_connections),
-                    "msg_type": message.get('header', {}).get('msg_type', 'unknown'),
-                    "channel": channel,
-                    "message_structure": message_with_channel
+                    "msg_type": msg_type,
+                    "channel": channel
                 })
             else:
                 debug_log(f"⚠️ [WebSocketBridge] No broadcast callback available", {
@@ -1240,9 +1417,60 @@ class WebSocketBridge(LoggerMixin):
                 })
                 
         except Exception as e:
+            msg_type = message.get('header', {}).get('msg_type', 'unknown')
             debug_log(f"❌ [WebSocketBridge] Error forwarding message to frontend", {
                 "kernel_id": kernel_id,
                 "channel": channel,
+                "msg_type": msg_type,
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+    
+    async def _track_clear_output_message(self, kernel_id: str, msg_id: str, parent_msg_id: str, message: Dict[str, Any]):
+        """Track clear_output message to ensure proper cell association."""
+        try:
+            debug_log(f"🔍 [WebSocketBridge] Tracking clear_output message:", {
+                "kernel_id": kernel_id,
+                "msg_id": msg_id,
+                "parent_msg_id": parent_msg_id,
+                "wait": message.get('content', {}).get('wait', False)
+            })
+            
+            # Store mapping from parent_msg_id to kernel_id for later lookup
+            if 'clear_output_parents' not in self.__dict__:
+                self.clear_output_parents = {}
+            
+            self.clear_output_parents[parent_msg_id] = {
+                'kernel_id': kernel_id,
+                'msg_id': msg_id,
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+            
+            # If we have a recent comm message, associate this clear_output with it
+            if kernel_id in self.most_recent_comm_messages:
+                recent_comm = self.most_recent_comm_messages[kernel_id]
+                time_since_comm = (datetime.datetime.now() - datetime.datetime.fromisoformat(recent_comm['timestamp'])).total_seconds()
+                
+                if time_since_comm < 10:
+                    if 'clear_output_to_comm' not in self.__dict__:
+                        self.clear_output_to_comm = {}
+                    
+                    self.clear_output_to_comm[msg_id] = {
+                        'comm_id': recent_comm['comm_id'],
+                        'comm_msg_id': recent_comm['msg_id'],
+                        'timestamp': datetime.datetime.now().isoformat()
+                    }
+                    
+                    debug_log(f"🔍 [WebSocketBridge] Associated clear_output with recent comm:", {
+                        "clear_output_msg_id": msg_id,
+                        "comm_id": recent_comm['comm_id'],
+                        "comm_msg_id": recent_comm['msg_id']
+                    })
+        except Exception as e:
+            debug_log(f"❌ [WebSocketBridge] Error tracking clear_output message", {
+                "kernel_id": kernel_id,
+                "msg_id": msg_id,
+                "parent_msg_id": parent_msg_id,
                 "error": str(e),
                 "error_type": type(e).__name__
             })
