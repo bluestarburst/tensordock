@@ -22,8 +22,7 @@ from webrtc.peer_manager import WebRTCPeerManager
 from webrtc.signaling import SignalingManager
 from jupyter_module import JupyterManager
 from messaging import MessageBroker, WorkerManager, ActionProcessor
-from services import HTTPProxyService, CanvasService, WidgetService, WebSocketBridge
-
+from services import HTTPProxyService, CanvasService, WidgetService, WebSocketBridge, YjsDocumentService, DocumentSyncService
 
 class ModularTensorDockServer:
     """Modular TensorDock server using the new module structure."""
@@ -48,29 +47,52 @@ class ModularTensorDockServer:
         self.widget_service = WidgetService()
         self.websocket_bridge = WebSocketBridge(self.config)
         
+        # Initialize Yjs services
+        self.yjs_service = YjsDocumentService(self.config)
+        self.document_sync_service = DocumentSyncService(self.config)
+        
         # Set up module integrations
         self._setup_module_integrations()
         
         # Set up cross-references between messaging components
         self.message_broker.set_worker_manager(self.worker_manager)
         
-        # Start messaging system
-        asyncio.create_task(self._start_messaging_system())
+        # Set up YJS service with broadcast callback
+        self.yjs_service.set_broadcast_callback(self._broadcast_to_all_clients)
         
-        # Initialize Jupyter manager
-        asyncio.create_task(self.initialize_jupyter())
+        # Set up action processor with YJS service reference
+        self.action_processor.yjs_service = self.yjs_service
+        
+        # Initialize task references (will be started when server starts)
+        self._messaging_task = None
+        self._jupyter_task = None
         
         debug_log(f"🚀 [Server] Modular TensorDock server initialized")
+    
+    async def start(self):
+        """Start the server services."""
+        # Start messaging system
+        self._messaging_task = asyncio.create_task(self._start_messaging_system())
+        
+        # Initialize Jupyter manager
+        self._jupyter_task = asyncio.create_task(self.initialize_jupyter())
+        
+        # Start WebSocket bridge
+        await self.websocket_bridge.start()
+        
+        debug_log(f"🚀 [Server] Server services started")
     
     def _setup_module_integrations(self):
         """Set up integrations between modules."""
         # Set up Jupyter manager
         self.jupyter_manager.set_broadcast_callback(self.broadcast)
+        self.jupyter_manager.set_send_to_client(self.send_to_client)
         self.jupyter_manager.set_websocket_bridge(self.websocket_bridge)
         
         # Set up action processor
         self.action_processor.set_jupyter_manager(self.jupyter_manager)
         self.action_processor.set_broadcast_callback(self.broadcast)
+        self.action_processor.set_send_to_client(self.send_to_client)
         self.action_processor.set_http_proxy_service(self.http_proxy_service)
         self.action_processor.set_canvas_service(self.canvas_service)
         self.action_processor.set_widget_service(self.widget_service)
@@ -84,33 +106,25 @@ class ModularTensorDockServer:
         self.peer_manager.add_connection_callback('data_channel_ready', self._on_data_channel_ready)
         
         # Set up message broker routing rules
-        self.message_broker.add_routing_rule('execute_code', 'action')
-        self.message_broker.add_routing_rule('execute_request', 'action')
-        self.message_broker.add_routing_rule('comm_msg', 'action')
-        self.message_broker.add_routing_rule('kernel_message', 'action')
-        self.message_broker.add_routing_rule('input', 'input')
         self.message_broker.add_routing_rule('sudo_http_request', 'action')
         self.message_broker.add_routing_rule('canvas_data', 'action')
-        self.message_broker.add_routing_rule('start_kernel', 'action')
-        self.message_broker.add_routing_rule('restart_kernel', 'action')
-        self.message_broker.add_routing_rule('websocket_connect', 'action')
-        self.message_broker.add_routing_rule('websocket_message', 'action')
-        self.message_broker.add_routing_rule('websocket_close', 'action')
+        self.message_broker.add_routing_rule('ws_connect', 'action')
+        self.message_broker.add_routing_rule('ws_message', 'action')
+        self.message_broker.add_routing_rule('ws_close', 'action')
         
         # Register action handlers with worker manager
-        self.worker_manager.register_task_handler('execute_code', self.action_processor._handle_execute_code)
-        self.worker_manager.register_task_handler('execute_request', self.action_processor._handle_execute_request)
-        self.worker_manager.register_task_handler('comm_msg', self.action_processor._handle_comm_msg)
-        self.worker_manager.register_task_handler('kernel_message', self.action_processor._handle_kernel_message)
-        self.worker_manager.register_task_handler('start_kernel', self.action_processor._handle_start_kernel)
-        self.worker_manager.register_task_handler('restart_kernel', self.action_processor._handle_restart_kernel)
-        self.worker_manager.register_task_handler('interrupt_kernel', self.action_processor._handle_interrupt_kernel)
-        self.worker_manager.register_task_handler('input', self.action_processor._handle_input)
         self.worker_manager.register_task_handler('sudo_http_request', self.action_processor._handle_sudo_http_request)
         self.worker_manager.register_task_handler('canvas_data', self.action_processor._handle_canvas_data)
-        self.worker_manager.register_task_handler('websocket_connect', self.action_processor._handle_websocket_connect)
-        self.worker_manager.register_task_handler('websocket_message', self.action_processor._handle_websocket_message)
-        self.worker_manager.register_task_handler('websocket_close', self.action_processor._handle_websocket_close)
+        self.worker_manager.register_task_handler('ws_connect', self.action_processor._handle_websocket_connect)
+        self.worker_manager.register_task_handler('ws_message', self.action_processor._handle_websocket_message)
+        self.worker_manager.register_task_handler('ws_close', self.action_processor._handle_websocket_close)
+        
+        # Register YJS message handlers
+        self.worker_manager.register_task_handler('yjs_document_update', self.action_processor._handle_yjs_document_update)
+        self.worker_manager.register_task_handler('yjs_awareness_update', self.action_processor._handle_yjs_awareness_update)
+        self.worker_manager.register_task_handler('yjs_sync_request', self.action_processor._handle_yjs_sync_request)
+        self.worker_manager.register_task_handler('yjs_request_state', self.action_processor._handle_yjs_request_state)
+        self.worker_manager.register_task_handler('yjs_state_response', self.action_processor._handle_yjs_state_response)
         
         debug_log(f"🔗 [Server] Module integrations configured")
 
@@ -125,30 +139,40 @@ class ModularTensorDockServer:
             # Known actions to forward
             actions = [
                 'sudo_http_request',
-                'execute_code',
-                'execute_request',
-                'comm_msg',
-                'kernel_message',
-                'input',
                 'canvas_data',
-                'events',
-                'start_kernel',
-                'restart_kernel',
-                'websocket_connect',
-                'websocket_message',
-                'websocket_close'
+                'ws_connect',
+                'ws_message',
+                'ws_close',
+                'yjs_document_update',
+                'yjs_awareness_update',
+                'yjs_sync_request',
+                'yjs_request_state',
+                'yjs_state_response'
             ]
             
             import asyncio
             
             def register(action_name: str):
-                def listener(data):
-                    # Normalize payload to include action and client id
-                    message = {'action': action_name, 'client_id': client_id}
-                    if isinstance(data, dict):
-                        message.update(data)
+                def listener(client_id, data):
+                    # ✅ CRITICAL FIX: Preserve wrapped message structure instead of flattening
+                    # The frontend sends properly wrapped messages that should be preserved
+                    if isinstance(data, dict) and 'instanceId' in data and 'url' in data and 'data' in data:
+                        # This is a properly wrapped WebSocket message - preserve the structure
+                        message = {
+                            'action': action_name,
+                            'client_id': client_id,
+                            'instanceId': data.get('instanceId'),
+                            'url': data.get('url'),
+                            'data': data.get('data'),
+                            'timestamp': data.get('timestamp')
+                        }
                     else:
-                        message['data'] = data
+                        # Legacy handling for non-wrapped messages
+                        message = {'action': action_name, 'client_id': client_id}
+                        if isinstance(data, dict):
+                            message.update(data)
+                        else:
+                            message['data'] = data
                     # Forward to message broker
                     asyncio.create_task(self.message_broker.route_message(message))
                 handler.add_listener(action_name, listener)
@@ -241,6 +265,22 @@ class ModularTensorDockServer:
                 "error_type": type(e).__name__
             })
             return 0
+
+    async def send_to_client(self, client_id, message):
+        """Send a message to a specific client."""
+        try:
+            debug_log(f"📤 [Server] Sending message to client", {
+                "client_id": client_id,
+                "action": message.get('action')
+            })
+            return self.peer_manager.send_message(client_id, message)
+        except Exception as e:
+            debug_log(f"❌ [Server] Failed to send message to client", {
+                "client_id": client_id,
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+            return False
     
     def get_server_status(self) -> dict:
         """Get comprehensive server status."""
@@ -283,6 +323,42 @@ class ModularTensorDockServer:
         await self.websocket_bridge.cleanup()
         
         debug_log(f"🧹 [Server] Server cleanup completed")
+
+    async def _broadcast_to_all_clients(self, message: dict):
+        """Broadcast a message to all connected WebRTC clients."""
+        try:
+            # Get all connected clients
+            connected_clients = self.peer_manager.get_connected_clients()
+            
+            if not connected_clients:
+                debug_log(f"⚠️ [Server] No connected clients to broadcast to")
+                return
+            
+            debug_log(f"📡 [Server] Broadcasting message to {len(connected_clients)} clients", {
+                "action": message.get('action'),
+                "client_count": len(connected_clients)
+            })
+            
+            # Send message to each client
+            for client_id in connected_clients:
+                try:
+                    # Send the message through WebRTC using peer manager
+                    success = self.peer_manager.send_message(client_id, message)
+                    if not success:
+                        debug_log(f"⚠️ [Server] Failed to send message to client {client_id}")
+                except Exception as e:
+                    debug_log(f"❌ [Server] Error broadcasting to client {client_id}", {
+                        "error": str(e),
+                        "error_type": type(e).__name__
+                    })
+            
+            debug_log(f"✅ [Server] Broadcast completed to {len(connected_clients)} clients")
+            
+        except Exception as e:
+            debug_log(f"❌ [Server] Error in broadcast_to_all_clients", {
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
 
 
 async def handle_offer(request):
@@ -328,6 +404,211 @@ async def handle_status(request):
         )
 
 
+async def handle_yjs_document(request):
+    """Handle Yjs document requests."""
+    try:
+        document_id = request.match_info['document_id']
+        server = request.app['server']
+        doc_state = await server.document_sync_service.get_document_state(document_id)
+        
+        if doc_state:
+            return web.json_response(doc_state)
+        else:
+            return web.json_response({"error": "Document not found"}, status=404)
+            
+    except Exception as e:
+        debug_log(f"❌ [YJS] Document handling error", {
+            "error": str(e),
+            "error_type": type(e).__name__
+        })
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_yjs_sync(request):
+    """Handle Yjs sync requests."""
+    try:
+        document_id = request.match_info['document_id']
+        data = await request.json()
+        
+        # Handle sync logic
+        return web.json_response({"status": "success"})
+        
+    except Exception as e:
+        debug_log(f"❌ [YJS] Sync handling error", {
+            "error": str(e),
+            "error_type": type(e).__name__
+        })
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_yjs_update(request):
+    """Handle Yjs update requests."""
+    try:
+        document_id = request.match_info['document_id']
+        data = await request.json()
+        server = request.app['server']
+        
+        changes = data.get("changes", [])
+        client_id = data.get("client_id")
+        
+        success = await server.document_sync_service.update_document(document_id, changes, client_id)
+        
+        if success:
+            return web.json_response({"status": "success"})
+        else:
+            return web.json_response({"error": "Update failed"}, status=400)
+            
+    except Exception as e:
+        debug_log(f"❌ [YJS] Update handling error", {
+            "error": str(e),
+            "error_type": type(e).__name__
+        })
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_websocket_events(request):
+    """Handle WebSocket connections to /api/events/subscribe."""
+    try:
+        debug_log(f"🔌 [WebSocket] Events WebSocket connection request")
+        
+        # Create WebSocket connection
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        
+        # Store the WebSocket connection
+        server = request.app['server']
+        connection_id = f"events_{datetime.datetime.now().timestamp()}"
+        
+        # Add to WebSocket bridge
+        await server.websocket_bridge.add_frontend_connection(
+            connection_id, 
+            ws, 
+            connection_type='events'
+        )
+        
+        debug_log(f"✅ [WebSocket] Events WebSocket connected", {
+            "connection_id": connection_id
+        })
+        
+        # Handle messages
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+                    debug_log(f"📥 [WebSocket] Events message received", {
+                        "connection_id": connection_id,
+                        "data": data
+                    })
+                    
+                    # Handle client message
+                    await server.websocket_bridge.handle_frontend_websocket_message(connection_id, data)
+                    
+                except json.JSONDecodeError as e:
+                    debug_log(f"❌ [WebSocket] Invalid JSON in events message", {
+                        "connection_id": connection_id,
+                        "error": str(e)
+                    })
+            elif msg.type == web.WSMsgType.ERROR:
+                debug_log(f"❌ [WebSocket] Events WebSocket error", {
+                    "connection_id": connection_id,
+                    "error": str(ws.exception())
+                })
+                break
+        
+        # Clean up connection
+        await server.websocket_bridge.remove_frontend_connection(connection_id)
+        
+        debug_log(f"🔌 [WebSocket] Events WebSocket disconnected", {
+            "connection_id": connection_id
+        })
+        
+        return ws
+        
+    except Exception as e:
+        debug_log(f"❌ [WebSocket] Events WebSocket error", {
+            "error": str(e),
+            "error_type": type(e).__name__
+        })
+        return web.Response(status=500)
+
+
+async def handle_websocket_kernel(request):
+    """Handle WebSocket connections to /api/kernels/{kernel_id}/channels."""
+    try:
+        kernel_id = request.match_info['kernel_id']
+        debug_log(f"🔌 [WebSocket] Kernel WebSocket connection request", {
+            "kernel_id": kernel_id
+        })
+        
+        # Create WebSocket connection
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        
+        # Store the WebSocket connection
+        server = request.app['server']
+        connection_id = f"kernel_{kernel_id}_{datetime.datetime.now().timestamp()}"
+        
+        # Add to WebSocket bridge
+        await server.websocket_bridge.add_frontend_connection(
+            connection_id, 
+            ws, 
+            connection_type='kernel',
+            kernel_id=kernel_id
+        )
+        
+        debug_log(f"✅ [WebSocket] Kernel WebSocket connected", {
+            "connection_id": connection_id,
+            "kernel_id": kernel_id
+        })
+        
+        # Handle messages
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+                    debug_log(f"📥 [WebSocket] Kernel message received", {
+                        "connection_id": connection_id,
+                        "kernel_id": kernel_id,
+                        "msg_type": data.get('header', {}).get('msg_type', 'unknown'),
+                        "msg_id": data.get('header', {}).get('msg_id', 'unknown')
+                    })
+                    
+                    # Handle client message
+                    await server.websocket_bridge.handle_frontend_websocket_message(connection_id, data)
+                    
+                except json.JSONDecodeError as e:
+                    debug_log(f"❌ [WebSocket] Invalid JSON in kernel message", {
+                        "connection_id": connection_id,
+                        "kernel_id": kernel_id,
+                        "error": str(e)
+                    })
+            elif msg.type == web.WSMsgType.ERROR:
+                debug_log(f"❌ [WebSocket] Kernel WebSocket error", {
+                    "connection_id": connection_id,
+                    "kernel_id": kernel_id,
+                    "error": str(ws.exception())
+                })
+                break
+        
+        # Clean up connection
+        await server.websocket_bridge.remove_frontend_connection(connection_id)
+        
+        debug_log(f"🔌 [WebSocket] Kernel WebSocket disconnected", {
+            "connection_id": connection_id,
+            "kernel_id": kernel_id
+        })
+        
+        return ws
+        
+    except Exception as e:
+        debug_log(f"❌ [WebSocket] Kernel WebSocket error", {
+            "kernel_id": kernel_id if 'kernel_id' in locals() else 'unknown',
+            "error": str(e),
+            "error_type": type(e).__name__
+        })
+        return web.Response(status=500)
+
+
 async def main():
     """Main server function."""
     try:
@@ -337,6 +618,9 @@ async def main():
         
         # Create server instance
         server = ModularTensorDockServer()
+        
+        # Start server services
+        await server.start()
         
         # Create aiohttp app
         app = web.Application()
@@ -356,6 +640,18 @@ async def main():
         
         debug_log(f"🌐 [Main] Starting HTTP server on port {port}")
         await site.start()
+        
+        # Start WebSocket bridge service
+        debug_log(f"🔌 [Main] Starting WebSocket bridge service")
+        await server.websocket_bridge.start()
+        
+        # Start Yjs WebSocket server
+        if server.config.yjs_enabled:
+            debug_log(f"🔗 [Main] Starting Yjs WebSocket server on port {server.config.yjs_port}")
+            await server.yjs_service.start_websocket_server(
+                host=server.config.yjs_host,
+                port=server.config.yjs_port
+            )
         
         debug_log(f"✅ [Main] Modular TensorDock Server started successfully")
         print(f"Modular server started at http://0.0.0.0:{port}")

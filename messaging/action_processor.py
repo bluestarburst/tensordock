@@ -6,7 +6,7 @@ Handles specific action types and integrates with other modules.
 import asyncio
 import json
 import datetime
-from typing import Dict, Any, Optional, Callable, Set
+from typing import Dict, Any, Optional, Callable
 
 # Use absolute imports to avoid relative import issues
 import sys
@@ -14,6 +14,9 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.logging import LoggerMixin, debug_log
+from core.message_deduplicator import MessageDeduplicator
+from core.jupyter_message_factory import JupyterMessageFactory
+from core.validation_utils import ValidationUtils
 
 
 class ActionProcessor(LoggerMixin):
@@ -23,6 +26,7 @@ class ActionProcessor(LoggerMixin):
         # External module references (to be set by server)
         self.jupyter_manager = None
         self.broadcast_callback = None
+        self.send_to_client = None
         self.http_proxy_service = None
         self.canvas_service = None
         self.widget_service = None
@@ -41,9 +45,8 @@ class ActionProcessor(LoggerMixin):
             'start_time': datetime.datetime.now()
         }
         
-        # ✅ CRITICAL FIX: Add message deduplication tracking
-        self.processed_comm_messages: Set[str] = set()  # Track processed comm message IDs
-        self.comm_message_tracker: Dict[str, Set[str]] = {}  # comm_id -> set of processed msg_ids
+        # Centralized message deduplication
+        self.deduplicator = MessageDeduplicator()
         
         # Register default handlers
         self._register_default_handlers()
@@ -61,6 +64,12 @@ class ActionProcessor(LoggerMixin):
         self.broadcast_callback = broadcast_callback
         
         debug_log(f"🔗 [ActionProcessor] Broadcast callback set")
+
+    def set_send_to_client(self, send_to_client: Callable):
+        """Set the callback for sending messages to clients."""
+        self.send_to_client = send_to_client
+        
+        debug_log(f"🔗 [ActionProcessor] Send to client callback set")
     
     def set_http_proxy_service(self, http_proxy_service):
         """Set the HTTP proxy service reference."""
@@ -92,21 +101,14 @@ class ActionProcessor(LoggerMixin):
     
     def _register_default_handlers(self):
         """Register default action handlers."""
-        self.register_handler('execute_code', self._handle_execute_code)
-        self.register_handler('execute_request', self._handle_execute_request)
-        self.register_handler('comm_msg', self._handle_comm_msg)
-        self.register_handler('kernel_message', self._handle_kernel_message)
-        self.register_handler('start_kernel', self._handle_start_kernel)
-        self.register_handler('restart_kernel', self._handle_restart_kernel)
-        self.register_handler('interrupt_kernel', self._handle_interrupt_kernel)
-        self.register_handler('input', self._handle_input)
+        # Deprecated: kernel/comm-specific handlers are removed in favor of URL-based ws_* schema
         self.register_handler('sudo_http_request', self._handle_sudo_http_request)
         self.register_handler('canvas_data', self._handle_canvas_data)
         
-        # WebSocket handlers
-        self.register_handler('websocket_connect', self._handle_websocket_connect)
-        self.register_handler('websocket_message', self._handle_websocket_message)
-        self.register_handler('websocket_close', self._handle_websocket_close)
+        # Aliases for simplified ws_* handshake
+        self.register_handler('ws_connect', self._handle_websocket_connect)
+        self.register_handler('ws_message', self._handle_websocket_message)
+        self.register_handler('ws_close', self._handle_websocket_close)
         
         debug_log(f"➕ [ActionProcessor] Default handlers registered", {
             "total_handlers": len(self.action_handlers)
@@ -195,390 +197,23 @@ class ActionProcessor(LoggerMixin):
             
             return False
     
-    async def _handle_execute_code(self, action: Dict[str, Any]) -> Optional[str]:
-        """Handle code execution action."""
-        if not self.jupyter_manager:
-            raise Exception("Jupyter manager not available")
-        
-        code = action.get('code', '')
-        cell_id = action.get('cell_id', 'unknown')
-        
-        debug_log(f"⚡ [ActionProcessor] Executing code", {
-            "cell_id": cell_id,
-            "code_length": len(code)
-        })
-        
-        execution_count = await self.jupyter_manager.execute_code(code, cell_id)
-        
-        if execution_count is not None and self.broadcast_callback:
-            await self.broadcast_callback({
-                'action': 'execution_complete',
-                'cell_id': cell_id,
-                'execution_count': execution_count
-            })
-        
-        return execution_count
-    
-    async def _handle_execute_request(self, action: Dict[str, Any]):
-        """Handle an execute_request message from the frontend."""
-        if not self.websocket_bridge:
-            raise Exception("WebSocket bridge not available")
-
-        instance_id = action.get('instanceId')
-        kernel_id = action.get('kernelId')
-        jupyter_message = action
-
-        if not instance_id or not kernel_id:
-            raise ValueError("Missing instanceId or kernelId in execute_request")
-
-        await self.websocket_bridge.send_message(instance_id, kernel_id, jupyter_message)
-        return {"status": "ok", "action": "execute_request_sent"}
-    
-    async def _handle_comm_msg(self, action: Dict[str, Any]):
-        """Handle comm message action with proper Jupyter integration."""
-        instance_id = action.get('instanceId')
-        kernel_id = action.get('kernelId')
-        
-        if not instance_id or not kernel_id:
-            raise ValueError("Missing instanceId or kernelId in comm message")
-        
-        # Extract Jupyter message from action
-        jupyter_message = {
-            'header': action.get('header', {}),
-            'content': action.get('content', {}),
-            'metadata': action.get('metadata', {}),
-            'buffers': action.get('buffers', [])
-        }
-        
-        # ✅ CRITICAL FIX: Check for duplicate comm message processing
-        msg_id = jupyter_message.get('header', {}).get('msg_id')
-        comm_id = jupyter_message.get('content', {}).get('comm_id')
-        
-        if msg_id and msg_id in self.processed_comm_messages:
-            debug_log(f"🔄 [ActionProcessor] Skipping duplicate comm message", {
-                "instance_id": instance_id,
-                "kernel_id": kernel_id,
-                "msg_id": msg_id,
-                "comm_id": comm_id
-            })
-            return {"success": True, "message": "Duplicate comm message skipped"}
-        
-        # Track processed message
-        if msg_id:
-            self.processed_comm_messages.add(msg_id)
-        
-        # Track comm messages by comm_id
-        if comm_id:
-            if comm_id not in self.comm_message_tracker:
-                self.comm_message_tracker[comm_id] = set()
-            if msg_id:
-                self.comm_message_tracker[comm_id].add(msg_id)
-        
-        debug_log(f"💬 [ActionProcessor] Enhanced comm message handling", {
-            "instance_id": instance_id,
-            "kernel_id": kernel_id,
-            "msg_type": jupyter_message.get('header', {}).get('msg_type'),
-            "comm_id": comm_id,
-            "target_name": jupyter_message.get('content', {}).get('target_name'),
-            "msg_id": msg_id
-        })
-        
-        # ✅ ENHANCED: Validate Jupyter message structure
-        if not self._validate_jupyter_message(jupyter_message):
-            debug_log(f"❌ [ActionProcessor] Invalid Jupyter message structure", {
-                "instance_id": instance_id,
-                "kernel_id": kernel_id,
-                "msg_id": msg_id
-            })
-            return {"success": False, "error": "Invalid Jupyter message structure"}
-        
-        # Forward to WebSocket bridge for proper Jupyter handling
-        if self.websocket_bridge:
-            success = await self.websocket_bridge.send_message(instance_id, kernel_id, jupyter_message)
-            if not success:
-                debug_log(f"❌ [ActionProcessor] Failed to forward comm message to Jupyter")
-                return {"success": False, "error": "Failed to forward to Jupyter kernel"}
-        
-        # Also track in widget service for state management
-        if self.widget_service:
-            try:
-                result = await self.widget_service.handle_jupyter_comm_message(kernel_id, jupyter_message)
-                
-                if result.get('success') and self.broadcast_callback:
-                    await self.broadcast_callback({
-                        'action': 'comm_msg_processed',
-                        'comm_id': comm_id,
-                        'msg_type': jupyter_message.get('header', {}).get('msg_type'),
-                        'result': result
-                    })
-                
-                return result
-            except AttributeError:
-                # Fallback to legacy method if enhanced widget service not available
-                data = jupyter_message.get('content', {}).get('data', {})
-                client_id = action.get('client_id', 'unknown')
-                result = await self.widget_service.handle_comm_message(comm_id, data, client_id)
-                
-                if result.get('success') and self.broadcast_callback:
-                    await self.broadcast_callback({
-                        'action': 'comm_msg_processed',
-                        'comm_id': comm_id,
-                        'result': result
-                    })
-                
-                return result
-        
-        return {"success": True, "message": "Comm message processed via WebSocket bridge"}
-    
-    def _validate_jupyter_message(self, message: Dict[str, Any]) -> bool:
-        """Validate Jupyter message structure."""
-        try:
-            # Check required top-level fields
-            if not isinstance(message, dict):
-                return False
-            
-            # Check header
-            header = message.get('header', {})
-            if not isinstance(header, dict):
-                return False
-            
-            required_header_fields = ['msg_id', 'msg_type', 'session', 'username', 'version', 'date']
-            for field in required_header_fields:
-                if field not in header:
-                    debug_log(f"❌ [ActionProcessor] Missing header field: {field}")
-                    return False
-            
-            # Check content
-            content = message.get('content', {})
-            if not isinstance(content, dict):
-                return False
-            
-            # Check metadata
-            metadata = message.get('metadata', {})
-            if not isinstance(metadata, dict):
-                return False
-            
-            # Check buffers
-            buffers = message.get('buffers', [])
-            if not isinstance(buffers, list):
-                return False
-            
-            return True
-            
-        except Exception as e:
-            debug_log(f"❌ [ActionProcessor] Message validation error: {e}")
-            return False
-    
-    async def _handle_kernel_message(self, action: Dict[str, Any]) -> bool:
-        """Handle kernel message action via WebSocket bridge."""
-        if not hasattr(self, 'websocket_bridge') or not self.websocket_bridge:
-            raise Exception("WebSocket bridge service not available")
-        
-        # Extract message details from the action
-        instance_id = action.get('instanceId')
-        kernel_id = action.get('kernelId')
-        data = action.get('data')  # The Jupyter message is in the 'data' field
-        channel = action.get('channel')  # The channel information from frontend
-        
-        debug_log(f"🔍 [ActionProcessor] Kernel message via WebSocket bridge", {
-            "instance_id": instance_id,
-            "kernel_id": kernel_id,
-            "has_data": data is not None,
-            "data_type": type(data).__name__ if data else 'None'
-        })
-        
-        if not instance_id or not data:
-            debug_log(f"❌ [ActionProcessor] Missing required fields for kernel message", {
-                "instance_id": instance_id,
-                "has_data": data is not None
-            })
-            return False
-        
-        try:
-            # ✅ CRITICAL FIX: Handle both string and dict data formats
-            if isinstance(data, str):
-                try:
-                    data = json.loads(data)
-                    debug_log(f"🔍 [ActionProcessor] Parsed string data to JSON", {
-                        "data_type": "string->dict",
-                        "data_keys": list(data.keys()) if isinstance(data, dict) else "not dict"
-                    })
-                except json.JSONDecodeError as e:
-                    debug_log(f"❌ [ActionProcessor] Failed to parse string data as JSON", {
-                        "error": str(e),
-                        "data_preview": data[:100] if len(data) > 100 else data
-                    })
-                    return False
-            
-            # Extract message details from the Jupyter message data
-            msg_type = data.get('header', {}).get('msg_type', 'unknown')
-            msg_id = data.get('header', {}).get('msg_id', 'unknown')
-            session_id = data.get('header', {}).get('session', 'unknown')
-            
-            debug_log(f"🔍 [ActionProcessor] Jupyter message details", {
-                "msg_type": msg_type,
-                "msg_id": msg_id,
-                "session_id": session_id,
-                "channel": channel
-            })
-            
-            # CRITICAL: Extract session ID from the kernel message and update WebSocket bridge
-            if session_id and session_id != 'unknown':
-                debug_log(f"🔍 [ActionProcessor] Extracted session ID from kernel message: {session_id}")
-                
-                # Update the WebSocket bridge with the session ID for this instance
-                self.websocket_bridge.update_session_id(instance_id, session_id)
-            else:
-                debug_log(f"⚠️ [ActionProcessor] No valid session ID found in kernel message header")
-            
-            # Send message via WebSocket bridge with channel information
-            success = await self.websocket_bridge.send_message(instance_id, kernel_id or 'default', data, channel)
-            
-            if success:
-                debug_log(f"✅ [ActionProcessor] Kernel message sent via WebSocket bridge", {
-                    "instance_id": instance_id,
-                    "kernel_id": kernel_id,
-                    "msg_type": msg_type,
-                    "session_id": session_id,
-                    "channel": channel
-                })
-                return True
-            else:
-                debug_log(f"❌ [ActionProcessor] Failed to send kernel message via WebSocket bridge", {
-                    "instance_id": instance_id,
-                    "kernel_id": kernel_id
-                })
-                return False
-                
-        except Exception as e:
-            debug_log(f"❌ [ActionProcessor] Error sending kernel message via WebSocket bridge", {
-                "instance_id": instance_id,
-                "kernel_id": kernel_id,
-                "error": str(e),
-                "error_type": type(e).__name__
-            })
-            return False
-    
-    async def _route_kernel_message_via_http(self, target_kernel_id: str, message_data: Any) -> bool:
-        """Route a kernel message to a specific kernel via HTTP API."""
-        try:
-            debug_log(f"🌐 [ActionProcessor] Routing kernel message via HTTP", {
-                "target_kernel_id": target_kernel_id,
-                "message_type": "kernel_info_request"
-            })
-            print(f"🌐 [ActionProcessor] Routing kernel message via HTTP to kernel: {target_kernel_id}")
-            
-            # Create a temporary WebSocket connection to the target kernel
-            # This is a simplified approach - in production you might want to maintain a pool
-            
-            # For now, we'll just acknowledge that we received the request
-            # and let the client handle the response through the HTTP API
-            
-            if self.broadcast_callback:
-                # Broadcast a message indicating that the kernel is available
-                await self.broadcast_callback({
-                    'action': 'kernel_available',
-                    'kernel_id': target_kernel_id,
-                    'message': 'Kernel is available via HTTP API'
-                })
-            
-            debug_log(f"✅ [ActionProcessor] Kernel message routed via HTTP", {
-                "target_kernel_id": target_kernel_id
-            })
-            return True
-            
-        except Exception as e:
-            debug_log(f"❌ [ActionProcessor] Failed to route kernel message via HTTP", {
-                "target_kernel_id": target_kernel_id,
-                "error": str(e)
-            })
-            print(f"❌ [ActionProcessor] Failed to route kernel message via HTTP: {e}")
-            return False
-    
-    async def _handle_start_kernel(self, action: Dict[str, Any]):
-        """Handle start kernel action."""
-        if not self.jupyter_manager:
-            raise Exception("Jupyter manager not available")
-        
-        debug_log(f"🚀 [ActionProcessor] Starting kernel")
-        
-        # CRITICAL FIX: Check if we already have a kernel to prevent duplicates
-        existing_kernel_id = self.jupyter_manager.get_kernel_id()
-        if existing_kernel_id:
-            debug_log(f"⚠️ [ActionProcessor] Kernel already exists, returning existing ID", {
-                "existing_kernel_id": existing_kernel_id
-            })
-            print(f"⚠️ [ActionProcessor] Kernel already exists: {existing_kernel_id}")
-            
-            if self.broadcast_callback:
-                await self.broadcast_callback({
-                    'action': 'kernel_started',
-                    'kernel_id': existing_kernel_id,
-                    'status': 'existing'
-                })
-            
-            return existing_kernel_id
-        
-        # Only create a new kernel if we don't have one
-        kernel_id = await self.jupyter_manager.create_kernel()
-        
-        if self.broadcast_callback:
-            await self.broadcast_callback({
-                'action': 'kernel_started',
-                'kernel_id': kernel_id,
-                'status': 'new'
-            })
-        
-        return kernel_id
-    
-    async def _handle_restart_kernel(self, action: Dict[str, Any]):
-        """Handle restart kernel action."""
-        if not self.jupyter_manager:
-            raise Exception("Jupyter manager not available")
-        
-        debug_log(f"🔄 [ActionProcessor] Restarting kernel")
-        
-        success = await self.jupyter_manager.restart_kernel()
-        
-        if success and self.broadcast_callback:
-            await self.broadcast_callback({
-                'action': 'kernel_restarted'
-            })
-        
-        return success
-    
-    async def _handle_interrupt_kernel(self, action: Dict[str, Any]):
-        """Handle interrupt kernel action."""
-        debug_log(f"⏹️ [ActionProcessor] Interrupting kernel")
-        
-        # TODO: Implement kernel interruption
-        # This would integrate with Jupyter manager
-        
-        if self.broadcast_callback:
-            await self.broadcast_callback({
-                'action': 'kernel_interrupted'
-            })
-        
-        return True
-    
-    async def _handle_input(self, action: Dict[str, Any]):
-        """Handle input action."""
-        input_data = action.get('input', '')
-        
-        debug_log(f"⌨️ [ActionProcessor] Input received", {
-            "input_length": len(input_data) if input_data else 0
-        })
-        
-        # TODO: Implement input handling
-        # This would integrate with kernel input system
-        
-        return True
     
     async def _handle_sudo_http_request(self, action: Dict[str, Any]) -> bool:
         """Handle sudo HTTP request action."""
         try:
+            # Validate HTTP proxy service
+            error = ValidationUtils.validate_websocket_connection(self.http_proxy_service, "sudo_http_request")
+            if error:
+                raise Exception(error)
+            
             url = action.get('url')
             method = action.get('method')
+            
+            # Validate HTTP request parameters
+            error = ValidationUtils.validate_http_request(url, method)
+            if error:
+                raise ValueError(error)
+            
             body = action.get('data', {})
             headers = action.get('headers', {})
             msg_id = action.get('msgId')
@@ -700,34 +335,6 @@ class ActionProcessor(LoggerMixin):
             })
             return False
     
-    def get_action_statistics(self) -> Dict[str, Any]:
-        """Get action processing statistics."""
-        uptime = datetime.datetime.now() - self.action_stats['start_time']
-        
-        return {
-            'total_actions': self.action_stats['total_actions'],
-            'successful_actions': self.action_stats['successful_actions'],
-            'failed_actions': self.action_stats['failed_actions'],
-            'success_rate': (self.action_stats['successful_actions'] / max(self.action_stats['total_actions'], 1)) * 100,
-            'actions_by_type': dict(self.action_stats['actions_by_type']),
-            'uptime_seconds': uptime.total_seconds(),
-            'start_time': self.action_stats['start_time'].isoformat()
-        }
-    
-    def get_status(self) -> Dict[str, Any]:
-        """Get action processor status."""
-        return {
-            'total_handlers': len(self.action_handlers),
-            'jupyter_manager_available': self.jupyter_manager is not None,
-            'broadcast_callback_available': self.broadcast_callback is not None,
-            'http_proxy_service_available': self.http_proxy_service is not None,
-            'canvas_service_available': self.canvas_service is not None,
-            'widget_service_available': self.widget_service is not None,
-            'websocket_bridge_available': self.websocket_bridge is not None,
-            'peer_manager_available': self.peer_manager is not None,
-            'available_actions': list(self.action_handlers.keys())
-        }
-    
     async def _handle_websocket_connect(self, action: Dict[str, Any]):
         """Handle WebSocket connection request from frontend."""
         debug_log(f"🔌 [ActionProcessor] WebSocket connect request received", {
@@ -740,14 +347,13 @@ class ActionProcessor(LoggerMixin):
             debug_log(f"❌ [ActionProcessor] WebSocket bridge service not available")
             raise Exception("WebSocket bridge service not available")
         
-        instance_id = action.get('instanceId')
-        kernel_id = action.get('kernelId')
+        # Handle both camelCase (frontend) and snake_case (backend) field naming
+        instance_id = action.get('instanceId') or action.get('instance_id')
         url = action.get('url')
         client_id = action.get('client_id')
         
         debug_log(f"🔌 [ActionProcessor] WebSocket connect request", {
             "instance_id": instance_id,
-            "kernel_id": kernel_id,
             "url": url,
             "client_id": client_id
         })
@@ -760,38 +366,29 @@ class ActionProcessor(LoggerMixin):
             return False
         
         try:
-            debug_log(f"🔌 [ActionProcessor] Calling websocket_bridge.connect_kernel", {
-                "instance_id": instance_id,
-                "kernel_id": kernel_id or 'default',
-                "url": url
-            })
             
-            # Connect to kernel via WebSocket bridge
-            success = await self.websocket_bridge.connect_kernel(instance_id, kernel_id or 'default', url)
+            success = await self.websocket_bridge.connect_websocket(instance_id, url)
             
             debug_log(f"🔌 [ActionProcessor] connect_kernel result", {
                 "success": success,
                 "instance_id": instance_id,
-                "kernel_id": kernel_id or 'default'
             })
             
             if success:
                 debug_log(f"✅ [ActionProcessor] WebSocket connection established", {
                     "instance_id": instance_id,
-                    "kernel_id": kernel_id,
                     "url": url
                 })
                 
                 # Send confirmation to frontend
                 if self.broadcast_callback:
                     confirmation_message = {
-                        'action': 'websocket_connected',
+                        'action': 'ws_connected',
                         'instanceId': instance_id,
-                        'kernelId': kernel_id or 'default',
                         'timestamp': datetime.datetime.now().isoformat()
                     }
                     
-                    debug_log(f"📤 [ActionProcessor] Sending websocket_connected confirmation", {
+                    debug_log(f"📤 [ActionProcessor] Sending ws_connected confirmation", {
                         "message": confirmation_message,
                         "client_id": client_id
                     })
@@ -799,7 +396,7 @@ class ActionProcessor(LoggerMixin):
                     # Send confirmation WITHOUT excluding the client (they need to receive it)
                     await self.broadcast_callback(confirmation_message)
                     
-                    debug_log(f"✅ [ActionProcessor] websocket_connected confirmation sent")
+                    debug_log(f"✅ [ActionProcessor] ws_connected confirmation sent")
                 else:
                     debug_log(f"⚠️ [ActionProcessor] No broadcast callback available")
                 
@@ -807,9 +404,26 @@ class ActionProcessor(LoggerMixin):
             else:
                 debug_log(f"❌ [ActionProcessor] Failed to establish WebSocket connection", {
                     "instance_id": instance_id,
-                    "kernel_id": kernel_id,
                     "url": url
                 })
+                
+                # Send failure notification to frontend
+                if self.broadcast_callback:
+                    failure_message = {
+                        'action': 'ws_connect_failed',
+                        'instanceId': instance_id,
+                        'url': url,
+                        'error': 'WebSocket connection failed',
+                        'timestamp': datetime.datetime.now().isoformat()
+                    }
+                    
+                    debug_log(f"📤 [ActionProcessor] Sending ws_connect_failed notification", {
+                        "message": failure_message,
+                        "client_id": client_id
+                    })
+                    
+                    await self.broadcast_callback(failure_message)
+                
                 return False
                 
         except Exception as e:
@@ -820,6 +434,25 @@ class ActionProcessor(LoggerMixin):
                 "error": str(e),
                 "error_type": type(e).__name__
             })
+            
+            # Send failure notification to frontend
+            if self.broadcast_callback:
+                failure_message = {
+                    'action': 'ws_connect_failed',
+                    'instanceId': instance_id,
+                    'kernelId': kernel_id or 'default',
+                    'url': url,
+                    'error': str(e),
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+                
+                debug_log(f"📤 [ActionProcessor] Sending ws_connect_failed notification (exception)", {
+                    "message": failure_message,
+                    "client_id": client_id
+                })
+                
+                await self.broadcast_callback(failure_message)
+            
             return False
     
     async def _handle_websocket_message(self, action: Dict[str, Any]):
@@ -827,39 +460,113 @@ class ActionProcessor(LoggerMixin):
         if not hasattr(self, 'websocket_bridge') or not self.websocket_bridge:
             raise Exception("WebSocket bridge service not available")
         
-        instance_id = action.get('instanceId')
-        kernel_id = action.get('kernelId')
+        # Handle both camelCase (frontend) and snake_case (backend) field naming
+        instance_id = action.get('instanceId') or action.get('instance_id')
+        kernel_id = action.get('kernelId') or action.get('kernel_id')
         data = action.get('data')
+        url = action.get('url')
         client_id = action.get('client_id')
+        
+        # ERROR: This should never happen - all messages should be properly wrapped
+        # If we're receiving direct Jupyter messages, there's a bug in the frontend
+        if not instance_id and not data and 'header' in action and 'content' in action:
+            debug_log(f"❌ [ActionProcessor] ERROR: Received direct Jupyter message (not wrapped) - this should not happen!", {
+                "has_header": 'header' in action,
+                "has_content": 'content' in action,
+                "msg_type": action.get('header', {}).get('msg_type'),
+                "action_keys": list(action.keys()),
+                "action_preview": str(action)[:200],
+                "session": action.get('header', {}).get('session'),
+                "client_id": client_id
+            })
+            
+            # Reject this message - it should be properly wrapped by the frontend
+            debug_log(f"❌ [ActionProcessor] REJECTING unwrapped Jupyter message - frontend must fix this!", {
+                "msg_type": action.get('header', {}).get('msg_type'),
+                "session": action.get('header', {}).get('session'),
+                "client_id": client_id,
+                "CRITICAL": "There is a WebSocket connection bypassing our WebRTC system!"
+            })
+            return False
         
         debug_log(f"📤 [ActionProcessor] WebSocket message from frontend", {
             "instance_id": instance_id,
             "kernel_id": kernel_id,
             "data_type": type(data).__name__,
-            "client_id": client_id
+            "data_preview": str(data)[:100] if data else None,
+            "url": url,
+            "client_id": client_id,
+            "action_keys": list(action.keys()),
+            "raw_instanceId": action.get('instanceId'),
+            "raw_instance_id": action.get('instance_id'),
+            "raw_data": action.get('data'),
+            "action_type": type(action).__name__,
+            "action_str_preview": str(action)[:500]
         })
         
-        if not instance_id or not data:
-            debug_log(f"❌ [ActionProcessor] Missing required fields for WebSocket message", {
+        # Enhanced validation - check for both instance_id and data
+        if not instance_id:
+            debug_log(f"❌ [ActionProcessor] Missing instance_id for WebSocket message", {
                 "instance_id": instance_id,
-                "has_data": data is not None
+                "action_keys": list(action.keys()),
+                "action_preview": str(action)[:200],
+                "full_action": action
+            })
+            return False
+        
+        if data is None:
+            debug_log(f"❌ [ActionProcessor] Missing data for WebSocket message", {
+                "instance_id": instance_id,
+                "data": data,
+                "action_keys": list(action.keys()),
+                "full_action": action
             })
             return False
         
         try:
-            # Send message via WebSocket bridge
-            success = await self.websocket_bridge.send_message(instance_id, kernel_id or 'default', data)
+            # Always use URL-based routing
+            if url:
+                debug_log(f"🔧 [ActionProcessor] Sending message via URL-based routing", {
+                    "instance_id": instance_id,
+                    "url": url,
+                    "data_type": type(data).__name__,
+                    "data_preview": str(data)[:100] if data else None
+                })
+                success = await self.websocket_bridge.send_ws_message_by_url(instance_id, url, data)
+            else:
+                # Try to infer URL from kernel_id
+                if kernel_id and kernel_id != 'events':
+                    # This is likely a kernel message
+                    inferred_url = f"ws://localhost:8888/api/kernels/{kernel_id}/channels"
+                    debug_log(f"🔧 [ActionProcessor] Sending message via inferred kernel URL", {
+                        "instance_id": instance_id,
+                        "kernel_id": kernel_id,
+                        "inferred_url": inferred_url,
+                        "data_type": type(data).__name__
+                    })
+                    success = await self.websocket_bridge.send_ws_message_by_url(instance_id, inferred_url, data)
+                else:
+                    # This might be an events message
+                    inferred_url = "ws://localhost:8888/api/events/subscribe"
+                    debug_log(f"🔧 [ActionProcessor] Sending message via inferred events URL", {
+                        "instance_id": instance_id,
+                        "inferred_url": inferred_url,
+                        "data_type": type(data).__name__
+                    })
+                    success = await self.websocket_bridge.send_ws_message_by_url(instance_id, inferred_url, data)
             
             if success:
                 debug_log(f"✅ [ActionProcessor] WebSocket message sent successfully", {
                     "instance_id": instance_id,
-                    "kernel_id": kernel_id
+                    "kernel_id": kernel_id,
+                    "url": url or "inferred"
                 })
                 return True
             else:
                 debug_log(f"❌ [ActionProcessor] Failed to send WebSocket message", {
                     "instance_id": instance_id,
-                    "kernel_id": kernel_id
+                    "kernel_id": kernel_id,
+                    "url": url or "inferred"
                 })
                 return False
                 
@@ -867,6 +574,7 @@ class ActionProcessor(LoggerMixin):
             debug_log(f"❌ [ActionProcessor] Error sending WebSocket message", {
                 "instance_id": instance_id,
                 "kernel_id": kernel_id,
+                "url": url or "inferred",
                 "error": str(e),
                 "error_type": type(e).__name__
             })
@@ -877,8 +585,9 @@ class ActionProcessor(LoggerMixin):
         if not hasattr(self, 'websocket_bridge') or not self.websocket_bridge:
             raise Exception("WebSocket bridge service not available")
         
-        instance_id = action.get('instanceId')
-        kernel_id = action.get('kernelId')
+        # Handle both camelCase (frontend) and snake_case (backend) field naming
+        instance_id = action.get('instanceId') or action.get('instance_id')
+        kernel_id = action.get('kernelId') or action.get('kernel_id')
         client_id = action.get('client_id')
         
         debug_log(f"🔌 [ActionProcessor] WebSocket close request", {
@@ -894,13 +603,24 @@ class ActionProcessor(LoggerMixin):
             return False
         
         try:
-            # Disconnect kernel via WebSocket bridge
-            success = await self.websocket_bridge.disconnect_kernel(instance_id, kernel_id or 'default')
+            # Use URL-based close via WebSocket bridge
+            url = action.get('url')
+            if url:
+                success = await self.websocket_bridge.ws_close(instance_id, url)
+            else:
+                # Try to infer URL from kernel_id
+                if kernel_id and kernel_id != 'events':
+                    inferred_url = f"ws://localhost:8888/api/kernels/{kernel_id}/channels"
+                    success = await self.websocket_bridge.ws_close(instance_id, inferred_url)
+                else:
+                    inferred_url = "ws://localhost:8888/api/events/subscribe"
+                    success = await self.websocket_bridge.ws_close(instance_id, inferred_url)
             
             if success:
                 debug_log(f"✅ [ActionProcessor] WebSocket connection closed", {
                     "instance_id": instance_id,
-                    "kernel_id": kernel_id
+                    "kernel_id": kernel_id,
+                    "url": url or "inferred"
                 })
                 
                 # Send confirmation to frontend
@@ -916,7 +636,8 @@ class ActionProcessor(LoggerMixin):
             else:
                 debug_log(f"❌ [ActionProcessor] Failed to close WebSocket connection", {
                     "instance_id": instance_id,
-                    "kernel_id": kernel_id
+                    "kernel_id": kernel_id,
+                    "url": url or "inferred"
                 })
                 return False
                 
@@ -956,3 +677,201 @@ class ActionProcessor(LoggerMixin):
         self.peer_manager = None
         
         debug_log(f"🧹 [ActionProcessor] Action processor cleanup completed")
+
+    async def _handle_yjs_document_update(self, action: Dict[str, Any]):
+        """Handle YJS document update from frontend."""
+        try:
+            document_id = action.get('documentId')
+            update_data = action.get('update')
+            client_id = action.get('client_id')
+            
+            if not document_id or not update_data:
+                debug_log(f"❌ [ActionProcessor] YJS document update missing required fields", {
+                    "document_id": document_id,
+                    "has_update": bool(update_data),
+                    "client_id": client_id
+                })
+                return False
+            
+            debug_log(f"📥 [ActionProcessor] YJS document update received", {
+                "document_id": document_id,
+                "update_size": len(update_data) if update_data else 0,
+                "client_id": client_id
+            })
+            
+            # Convert array back to bytes
+            update_bytes = bytes(update_data)
+            
+            # Store the update and broadcast to other clients
+            if hasattr(self, 'yjs_service') and self.yjs_service:
+                await self.yjs_service.handle_document_update(document_id, update_bytes)
+            else:
+                debug_log(f"⚠️ [ActionProcessor] YJS service not available", {
+                    "document_id": document_id,
+                    "client_id": client_id
+                })
+            
+            return True
+            
+        except Exception as e:
+            debug_log(f"❌ [ActionProcessor] Error handling YJS document update", {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "client_id": action.get('client_id')
+            })
+            return False
+
+    async def _handle_yjs_awareness_update(self, action: Dict[str, Any]):
+        """Handle YJS awareness update from frontend."""
+        try:
+            document_id = action.get('documentId')
+            awareness_data = action.get('awareness')
+            client_id = action.get('client_id')
+            
+            if not document_id:
+                debug_log(f"❌ [ActionProcessor] YJS awareness update missing document ID", {
+                    "document_id": document_id,
+                    "client_id": client_id
+                })
+                return False
+            
+            # Skip empty awareness updates - they're normal in YJS protocol
+            if not awareness_data or len(awareness_data) == 0:
+                debug_log(f"🔧 [ActionProcessor] Skipping empty YJS awareness update", {
+                    "document_id": document_id,
+                    "client_id": client_id
+                })
+                return True
+            
+            debug_log(f"📥 [ActionProcessor] YJS awareness update received", {
+                "document_id": document_id,
+                "awareness_size": len(awareness_data),
+                "client_id": client_id
+            })
+            
+            # Convert array back to bytes
+            awareness_bytes = bytes(awareness_data)
+            
+            # Store the update and broadcast to other clients
+            if hasattr(self, 'yjs_service') and self.yjs_service:
+                await self.yjs_service.handle_awareness_update(document_id, awareness_bytes)
+            else:
+                debug_log(f"⚠️ [ActionProcessor] YJS service not available", {
+                    "document_id": document_id,
+                    "client_id": client_id
+                })
+            
+            return True
+            
+        except Exception as e:
+            debug_log(f"❌ [ActionProcessor] Error handling YJS awareness update", {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "client_id": action.get('client_id')
+            })
+            return False
+
+    async def _handle_yjs_sync_request(self, action: Dict[str, Any]):
+        """Handle YJS sync request from frontend."""
+        try:
+            document_id = action.get('documentId')
+            client_id = action.get('client_id')
+            
+            if not document_id:
+                debug_log(f"❌ [ActionProcessor] YJS sync request missing document ID", {
+                    "document_id": document_id,
+                    "client_id": client_id
+                })
+                return False
+            
+            debug_log(f"📥 [ActionProcessor] YJS sync request received", {
+                "document_id": document_id,
+                "client_id": client_id
+            })
+            
+            # Handle the sync request
+            if hasattr(self, 'yjs_service') and self.yjs_service:
+                await self.yjs_service.handle_sync_request(document_id)
+            else:
+                debug_log(f"⚠️ [ActionProcessor] YJS service not available", {
+                    "document_id": document_id,
+                    "client_id": client_id
+                })
+            
+            return True
+            
+        except Exception as e:
+            debug_log(f"❌ [ActionProcessor] Error handling YJS sync request", {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "client_id": action.get('client_id')
+            })
+            return False
+
+    async def _handle_yjs_request_state(self, action: Dict[str, Any]):
+        """Handle YJS state request from backend."""
+        try:
+            document_id = action.get('documentId')
+            client_id = action.get('client_id')
+            
+            if not document_id:
+                debug_log(f"❌ [ActionProcessor] YJS state request missing document ID", {
+                    "document_id": document_id,
+                    "client_id": client_id
+                })
+                return False
+            
+            debug_log(f"📥 [ActionProcessor] YJS state request received", {
+                "document_id": document_id,
+                "client_id": client_id
+            })
+            
+            # This will be handled by the frontend YJS provider
+            # The frontend will respond with the current document state
+            return True
+            
+        except Exception as e:
+            debug_log(f"❌ [ActionProcessor] Error handling YJS state request", {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "client_id": action.get('client_id')
+            })
+            return False
+
+    async def _handle_yjs_state_response(self, action: Dict[str, Any]):
+        """Handle YJS state response from frontend."""
+        try:
+            document_id = action.get('documentId')
+            notebook_content = action.get('notebookContent')
+            client_id = action.get('client_id')
+            
+            if not document_id or not notebook_content:
+                debug_log(f"❌ [ActionProcessor] YJS state response missing required fields", {
+                    "document_id": document_id,
+                    "has_content": bool(notebook_content),
+                    "client_id": client_id
+                })
+                return False
+            
+            debug_log(f"📥 [ActionProcessor] YJS state response received", {
+                "document_id": document_id,
+                "client_id": client_id
+            })
+            
+            if hasattr(self, 'yjs_service') and self.yjs_service:
+                await self.yjs_service.handle_document_state_response(document_id, notebook_content)
+            else:
+                debug_log(f"⚠️ [ActionProcessor] YJS service not available", {
+                    "document_id": document_id,
+                    "client_id": client_id
+                })
+            
+            return True
+            
+        except Exception as e:
+            debug_log(f"❌ [ActionProcessor] Error handling YJS state response", {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "client_id": action.get('client_id')
+            })
+            return False

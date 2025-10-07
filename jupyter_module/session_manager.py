@@ -25,7 +25,7 @@ class SessionManager(LoggerMixin):
         self.config = config
         self.session_id: Optional[str] = None
         self.session_name: str = "python3"
-        self.session_path: str = "/tmp/test.ipynb"
+        self.session_path: str = ""  # Will be set when notebook file is created
         self.session_type: str = "notebook"
         self.kernel_name: str = "python3"
         
@@ -42,10 +42,66 @@ class SessionManager(LoggerMixin):
         """Get the current session ID."""
         return self.session_id
     
+    async def _create_notebook_file(self):
+        """Use existing tmp.ipynb file or create it if it doesn't exist."""
+        try:
+            debug_log(f"📝 [Session] Setting up tmp.ipynb notebook file")
+            
+            # Use tmp.ipynb as the persistent notebook file
+            target_path = "tmp.ipynb"
+            
+            # Check if tmp.ipynb already exists
+            check_url = f"{self.config.jupyter_url}/api/contents/{target_path}"
+            check_response = requests.get(check_url, headers=self.config.get_jupyter_headers())
+            
+            if check_response.status_code == 200:
+                # File exists, use it
+                debug_log(f"✅ [Session] Using existing tmp.ipynb file")
+                self.session_path = target_path
+                return target_path
+            elif check_response.status_code == 404:
+                # File doesn't exist, create it
+                debug_log(f"📝 [Session] Creating new tmp.ipynb file")
+                
+                create_url = f"{self.config.jupyter_url}/api/contents/{target_path}"
+                create_data = {
+                    'type': 'notebook',
+                    'path': target_path
+                }
+                
+                create_response = requests.put(create_url, headers=self.config.get_jupyter_headers(), json=create_data)
+                if create_response.status_code not in [200, 201]:
+                    debug_log(f"❌ [Session] Failed to create tmp.ipynb file", {
+                        "status_code": create_response.status_code,
+                        "response": create_response.text
+                    })
+                    raise Exception(f"Failed to create tmp.ipynb: {create_response.status_code}")
+                
+                debug_log(f"✅ [Session] Created tmp.ipynb file successfully")
+                self.session_path = target_path
+                return target_path
+            else:
+                # Unexpected error
+                debug_log(f"❌ [Session] Unexpected error checking tmp.ipynb", {
+                    "status_code": check_response.status_code,
+                    "response": check_response.text
+                })
+                raise Exception(f"Failed to check tmp.ipynb: {check_response.status_code}")
+                
+        except Exception as e:
+            debug_log(f"❌ [Session] Error creating notebook file", {
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+            raise
+    
     async def create_session(self) -> str:
         """Create a new Jupyter session."""
         try:
             debug_log(f"📝 [Session] Creating new session")
+            
+            # First, create the notebook file following JupyterLab pattern
+            await self._create_notebook_file()
             
             url = f"{self.config.jupyter_url}/api/sessions"
             headers = self.config.get_jupyter_headers()
@@ -73,6 +129,7 @@ class SessionManager(LoggerMixin):
             debug_log(f"📝 [Session] Session created successfully", {
                 "session_id": self.session_id,
                 "session_name": self.session_name,
+                "session_path": self.session_path,
                 "created_at": self.created_at.isoformat()
             })
             

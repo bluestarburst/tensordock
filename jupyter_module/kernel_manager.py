@@ -39,14 +39,19 @@ class KernelManager(LoggerMixin):
         
         # Ping task
         self.ping_task = None
+        # Receive task
+        self.recv_task = None
         
-    async def create_kernel(self) -> str:
+    async def create_kernel(self, session_manager=None) -> str:
         """Create a new Jupyter kernel."""
         try:
             debug_log(f"🚀 [Kernel] Creating new kernel")
             
-            # Create session first
-            session_id = await self._create_session()
+            # Use provided session manager or create session directly
+            if session_manager:
+                session_id = await session_manager.create_session()
+            else:
+                session_id = await self._create_session()
             
             # Get kernel info
             kernel_id = await self._get_kernel_info(session_id)
@@ -57,6 +62,13 @@ class KernelManager(LoggerMixin):
             self.kernel_id = kernel_id
             self.connected = True
             self.reconnect_attempts = 0
+
+            # Ensure kernel has widget/comm support (ipywidgets, jupyterlab_widgets)
+            try:
+                await self._ensure_widget_support()
+            except Exception as _:
+                # Non-fatal; widgets may not be used immediately
+                pass
             
             debug_log(f"🚀 [Kernel] Kernel created successfully", {
                 "kernel_id": kernel_id,
@@ -82,7 +94,7 @@ class KernelManager(LoggerMixin):
         
         session_data = {
             'name': 'python3',
-            'path': '/tmp/test.ipynb',
+            'path': 'tmp.ipynb',
             'type': 'notebook',
             'kernel': {
                 'name': 'python3'
@@ -146,6 +158,98 @@ class KernelManager(LoggerMixin):
         
         # Start ping task
         self.ping_task = asyncio.create_task(self._ping_loop())
+        # Start receive loop
+        self.recv_task = asyncio.create_task(self._recv_loop())
+
+    async def _recv_loop(self):
+        """Listen for kernel WebSocket messages and dispatch/queue them.
+
+        Preserves channel, parent_header, and content for proper frontend routing.
+        """
+        while self.connected and self.kernel_ws and self.kernel_ws.open:
+            try:
+                raw = await self.kernel_ws.recv()
+                data = json.loads(raw)
+
+                # Basic fields
+                header = data.get('header', {})
+                msg_type = header.get('msg_type', 'unknown')
+                channel = data.get('channel') or 'iopub'
+
+                # Enqueue for any waiter (e.g., execute_reply tracking)
+                try:
+                    await self.response_queue.put(data)
+                except Exception:
+                    pass
+
+                # Notify generic handler
+                handler = self.message_handlers.get('kernel_message')
+                if handler:
+                    try:
+                        await handler(data)
+                    except Exception:
+                        pass
+
+                # Notify channel-specific handler
+                ch_handler = self.message_handlers.get(f"{channel}_message")
+                if ch_handler:
+                    try:
+                        await ch_handler(data)
+                    except Exception:
+                        pass
+
+                # Targeted logging for widget-related traffic
+                if channel == 'iopub' and (msg_type.startswith('comm') or msg_type in ['display_data', 'update_display_data', 'clear_output', 'stream']):
+                    content = data.get('content', {})
+                    comm_id = content.get('comm_id')
+                    debug_log(f"📥 [Kernel] IOPub message received", {
+                        "msg_type": msg_type,
+                        "comm_id": comm_id,
+                        "channel": channel,
+                        "has_parent": bool(data.get('parent_header')),
+                        "data_keys": list(content.get('data', {}).keys()) if isinstance(content.get('data'), dict) else None
+                    })
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                debug_log(f"❌ [Kernel] Receive loop error", {
+                    "error": str(e),
+                    "error_type": type(e).__name__
+                })
+                await asyncio.sleep(0.1)
+
+    async def _ensure_widget_support(self):
+        """Ensure default kernel has required packages for widget/comm handling.
+
+        Installs and imports ipywidgets (v8+) and jupyterlab_widgets if missing.
+        """
+        if not self.connected or not self.kernel_ws:
+            return
+
+        code = (
+            "import sys, subprocess, json\n"
+            "pkgs = ['ipywidgets>=8.0.0','jupyterlab_widgets>=3.0.0','traitlets>=5.0.0']\n"
+            "def ensure(pkg):\n"
+            "    name = pkg.split('>=')[0].replace('-', '_')\n"
+            "    try:\n"
+            "        __import__(name)\n"
+            "        return True\n"
+            "    except Exception:\n"
+            "        try:\n"
+            "            subprocess.check_call([sys.executable,'-m','pip','install',pkg,'--quiet'])\n"
+            "            __import__(name)\n"
+            "            return True\n"
+            "        except Exception as e:\n"
+            "            print(f'[widgets] install failed: {pkg}: {e}')\n"
+            "            return False\n"
+            "ok = all(ensure(p) for p in pkgs)\n"
+            "print(json.dumps({'widgets_ok': ok}))\n"
+        )
+
+        msg_id = await self._send_execute_request(code, 'kernel-widgets-preflight')
+        # Best-effort: wait briefly for execute_reply
+        await self._wait_for_execution_reply(msg_id)
     
     async def _ping_loop(self):
         """Keep WebSocket connection alive with pings."""
@@ -275,6 +379,8 @@ class KernelManager(LoggerMixin):
         
         if self.ping_task:
             self.ping_task.cancel()
+        if self.recv_task:
+            self.recv_task.cancel()
         
         self.kernel_id = None
         self.kernel_ws = None

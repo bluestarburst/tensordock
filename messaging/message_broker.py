@@ -115,19 +115,7 @@ class MessageBroker(LoggerMixin):
                     # Also submit to worker manager for processing
                     if self.worker_manager:
                         await self.worker_manager.submit_task(action, message)
-                elif target_queue == 'input':
-                    await self.input_queue.put(message)
-                elif target_queue == 'response':
-                    await self.response_queue.put(message)
             
-            # Default routing for common actions
-            elif action in ['execute_code', 'comm_msg', 'kernel_message']:
-                await self.action_queue.put(message)
-                # Also submit to worker manager for processing
-                if self.worker_manager:
-                    await self.worker_manager.submit_task(action, message)
-            elif action == 'input':
-                await self.input_queue.put(message)
             else:
                 # Unknown action, put in action queue for processing
                 await self.action_queue.put(message)

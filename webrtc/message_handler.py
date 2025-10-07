@@ -109,20 +109,7 @@ class WebRTCMessageHandler(LoggerMixin):
     def _call_listeners(self, action: str, data: Dict[str, Any], listeners: Set[Callable]):
         """Call all listeners for an action with processed message data."""
         
-        # Process message data based on action type
-        if action == 'kernel':
-            message_data = self._process_kernel_message(data)
-        elif action == 'kernel_message':
-            # Handle kernel_message action specifically
-            message_data = data
-            debug_log(f"🔵 [WebRTC] Kernel message received", {
-                "action": action,
-                "has_data": 'data' in data,
-                "message_keys": list(data.keys())
-            })
-        elif action == 'events':
-            message_data = data.get('data')
-        elif action == 'sudo_http_request':
+        if action == 'sudo_http_request':
             # CRITICAL: For HTTP requests, preserve the full message structure
             # Don't extract just the 'data' field, keep url, method, headers, msgId
             message_data = data
@@ -148,6 +135,17 @@ class WebRTCMessageHandler(LoggerMixin):
                     "count": self._canvas_log_counter,
                     "message_keys": list(data.keys())
                 })
+        elif action in ['ws_connect', 'ws_message', 'ws_close']:
+            # ✅ CRITICAL FIX: Preserve wrapped WebSocket message structure
+            # These actions have instanceId, url, data structure that must be preserved
+            message_data = data
+            debug_log(f"🔌 [WebRTC] WebSocket action - preserving wrapped structure", {
+                "action": action,
+                "has_instanceId": 'instanceId' in data,
+                "has_url": 'url' in data,
+                "has_data": 'data' in data,
+                "message_keys": list(data.keys())
+            })
         elif data.get('data'):
             message_data = data['data']
         else:
@@ -168,7 +166,7 @@ class WebRTCMessageHandler(LoggerMixin):
         # Call all listeners
         for callback in listeners:
             try:
-                callback(message_data)
+                callback(self.client_id, message_data)
             except Exception as e:
                 self.log_error(f"Error in listener callback", {
                     "action": action,

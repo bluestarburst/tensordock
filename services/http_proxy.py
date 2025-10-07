@@ -22,7 +22,7 @@ class HTTPProxyService(LoggerMixin):
     
     def __init__(self, config: ServerConfig):
         self.config = config
-        self.base_url = config.jupyter_url
+        self.base_url = config.jupyter_url  # Remove /lab to access API directly
         self.headers = config.get_jupyter_headers()
         
         # Request statistics
@@ -248,89 +248,6 @@ class HTTPProxyService(LoggerMixin):
             })
             raise
     
-    async def get_jupyter_info(self) -> Dict[str, Any]:
-        """Get Jupyter server information."""
-        try:
-            response = await self.sudo_http_request('api', 'GET')
-            return response
-        except Exception as e:
-            debug_log(f"❌ [HTTPProxy] Failed to get Jupyter info", {
-                "error": str(e),
-                "error_type": type(e).__name__
-            })
-            return {'status': 500, 'data': 'Failed to get Jupyter info'}
-    
-    async def list_kernels(self) -> Dict[str, Any]:
-        """List all running kernels."""
-        try:
-            response = await self.sudo_http_request('api/kernels', 'GET')
-            return response
-        except Exception as e:
-            debug_log(f"❌ [HTTPProxy] Failed to list kernels", {
-                "error": str(e),
-                "error_type": type(e).__name__
-            })
-            return {'status': 500, 'data': 'Failed to list kernels'}
-    
-    async def list_sessions(self) -> Dict[str, Any]:
-        """List all active sessions."""
-        try:
-            response = await self.sudo_http_request('api/sessions', 'GET')
-            return response
-        except Exception as e:
-            debug_log(f"❌ [HTTPProxy] Failed to list sessions", {
-                "error": str(e),
-                "error_type": type(e).__name__
-            })
-            return {'status': 500, 'data': 'Failed to list sessions'}
-    
-    async def create_session(self, session_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new Jupyter session."""
-        try:
-            response = await self.sudo_http_request('api/sessions', 'POST', session_data)
-            return response
-        except Exception as e:
-            debug_log(f"❌ [HTTPProxy] Failed to create session", {
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "session_data": session_data
-            })
-            return {'status': 500, 'data': 'Failed to create session'}
-    
-    async def delete_session(self, session_id: str) -> Dict[str, Any]:
-        """Delete a Jupyter session."""
-        try:
-            response = await self.sudo_http_request(f'api/sessions/{session_id}', 'DELETE')
-            return response
-        except Exception as e:
-            debug_log(f"❌ [HTTPProxy] Failed to delete session", {
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "session_id": session_id
-            })
-            return {'status': 500, 'data': 'Failed to delete session'}
-    
-    def get_statistics(self) -> Dict[str, Any]:
-        """Get HTTP proxy statistics."""
-        uptime = datetime.datetime.now() - self.request_stats['start_time']
-        
-        return {
-            'total_requests': self.request_stats['total_requests'],
-            'successful_requests': self.request_stats['successful_requests'],
-            'failed_requests': self.request_stats['failed_requests'],
-            'success_rate': (self.request_stats['successful_requests'] / max(self.request_stats['total_requests'], 1)) * 100,
-            'requests_by_method': dict(self.request_stats['requests_by_method']),
-            'uptime_seconds': uptime.total_seconds(),
-            'start_time': self.request_stats['start_time'].isoformat()
-        }
-    
-    def get_status(self) -> Dict[str, Any]:
-        """Get HTTP proxy service status."""
-        return {
-            'base_url': self.base_url,
-            'has_headers': bool(self.headers),
-            'total_requests': self.request_stats['total_requests']
-        }
     
     async def cleanup(self):
         """Clean up HTTP proxy service resources."""

@@ -44,6 +44,13 @@ class ServerConfig:
     vast_udp_port: int = 6000
     vast_tcp_port: int = 8765
     
+    # Yjs configuration
+    yjs_enabled: bool = True
+    yjs_port: int = 8766
+    yjs_host: str = "localhost"
+    yjs_max_connections: int = 100
+    yjs_document_timeout: int = 3600  # 1 hour
+    
     # WebRTC configuration
     rtc_config: Optional[RTCConfiguration] = None
     
@@ -99,6 +106,10 @@ class ServerConfig:
     def get_jupyter_headers(self) -> dict:
         """Get headers for Jupyter API requests."""
         return {'Authorization': f'Token {self.jupyter_token}'}
+    
+    def get_jupyter_token(self) -> str:
+        """Get Jupyter authentication token."""
+        return self.jupyter_token
     
     def get_ws_url(self, kernel_id: str, session_id: str) -> str:
         """Get WebSocket URL for Jupyter kernel."""
