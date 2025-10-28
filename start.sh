@@ -1,3 +1,11 @@
+# Create logs directory in tensordock folder
+mkdir -p logs
+
+# Create timestamped log files with absolute paths
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+JUPYTER_LOG="$(pwd)/logs/jupyter_${TIMESTAMP}.log"
+SERVER_LOG="$(pwd)/logs/server_${TIMESTAMP}.log"
+
 turnserver \
         -n \
         -a \
@@ -14,8 +22,9 @@ turnserver \
         -p "${VAST_UDP_PORT_70001:-6000}" \
         -X "${PUBLIC_IPADDR:-localhost}" 2>&1 | tee /var/log/coturn.log &
 
-# run jupyter server in the background
-jupyter server &
 
-# run tensordock in the foreground
-nohup python3 -u server.py > server.log 2>&1 &
+# Start Jupyter Server in the background at port 8888 with logging
+jupyter server --port=8888 --IdentityProvider.token=test > "$JUPYTER_LOG" 2>&1 &
+
+# Start the main server with logging
+python -u run_modular.py > "$SERVER_LOG" 2>&1
