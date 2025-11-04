@@ -6,12 +6,19 @@ This script sets up the Python path correctly and runs the server.
 import sys
 import os
 import datetime
+import tempfile
 
 # Get the directory containing this script
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
+# Determine log directory: prefer TD_LOG_DIR env, otherwise tmpfs fallback
+log_dir_env = os.environ.get("TD_LOG_DIR")
+if log_dir_env:
+    logs_dir = log_dir_env
+else:
+    logs_dir = os.path.join(tempfile.gettempdir(), "tensordock-logs")
+
 # Create logs directory if it doesn't exist
-logs_dir = os.path.join(script_dir, "logs")
 os.makedirs(logs_dir, exist_ok=True)
 
 # Create a timestamped log file for this run

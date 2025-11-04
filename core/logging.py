@@ -4,17 +4,39 @@ Centralized logging setup for TensorDock server.
 import logging
 import datetime
 import os
+import tempfile
 from typing import Any, Optional, Dict
+
+
+def _resolve_log_dir() -> str:
+    """Determine a writable log directory respecting container constraints."""
+    candidates = []
+
+    env_dir = os.environ.get("TD_LOG_DIR")
+    if env_dir:
+        candidates.append(env_dir)
+
+    # Fallback to system temporary directory (tmpfs inside container)
+    candidates.append(os.path.join(tempfile.gettempdir(), "tensordock-logs"))
+
+    for directory in candidates:
+        if not directory:
+            continue
+        try:
+            os.makedirs(directory, exist_ok=True)
+            return directory
+        except OSError:
+            continue
+
+    # Last resort: current working directory (may still fail but nothing else left)
+    return os.getcwd()
 
 
 def setup_logging(level: str = "INFO", log_file: str = "tensordock_server.log") -> logging.Logger:
     """Setup logging configuration with file output."""
-    # Create logs directory if it doesn't exist
-    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    
+    log_dir = _resolve_log_dir()
     log_path = os.path.join(log_dir, log_file)
-    
+
     # Configure logging to write to both file and console
     logging.basicConfig(
         level=getattr(logging, level.upper()),
@@ -25,10 +47,10 @@ def setup_logging(level: str = "INFO", log_file: str = "tensordock_server.log") 
             logging.StreamHandler()  # Console output
         ]
     )
-    
+
     logger = logging.getLogger("tensordock")
     logger.info(f"Logging initialized - output will be written to: {log_path}")
-    
+
     return logger
 
 
