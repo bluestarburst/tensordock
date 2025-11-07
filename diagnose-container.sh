@@ -1,0 +1,103 @@
+#!/bin/bash
+
+# Diagnostic script for unified container
+# Run this inside the container to diagnose issues
+
+echo "=== Container Diagnostics ==="
+echo ""
+
+echo "1. Supervisord process:"
+if ps aux | grep -E "[s]upervisord" > /dev/null; then
+    echo "  ✅ Supervisord is running"
+    ps aux | grep -E "[s]upervisord"
+else
+    echo "  ❌ Supervisord is NOT running"
+fi
+echo ""
+
+echo "2. Supervisor socket:"
+if [ -S /var/run/supervisor.sock ]; then
+    echo "  ✅ Socket exists"
+    ls -la /var/run/supervisor.sock
+else
+    echo "  ❌ Socket not found at /var/run/supervisor.sock"
+fi
+echo ""
+
+echo "3. Supervisor PID file:"
+if [ -f /var/run/supervisord.pid ]; then
+    echo "  ✅ PID file exists"
+    cat /var/run/supervisord.pid
+    echo "  PID file contents: $(cat /var/run/supervisord.pid)"
+else
+    echo "  ❌ PID file not found"
+fi
+echo ""
+
+echo "4. Log directory:"
+if [ -d /var/log/supervisor ]; then
+    echo "  ✅ Log directory exists"
+    ls -la /var/log/supervisor/
+    if [ "$(ls -A /var/log/supervisor)" ]; then
+        echo "  ✅ Log directory has files"
+    else
+        echo "  ⚠️  Log directory is empty"
+    fi
+else
+    echo "  ❌ Log directory missing"
+fi
+echo ""
+
+echo "5. Supervisor config:"
+if [ -f /etc/supervisor/conf.d/supervisord.conf ]; then
+    echo "  ✅ Config file exists"
+    # Validate config
+    if /usr/local/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf -t 2>&1; then
+        echo "  ✅ Config file is valid"
+    else
+        echo "  ❌ Config file has errors (see above)"
+    fi
+else
+    echo "  ❌ Config file missing"
+fi
+echo ""
+
+echo "6. Environment variables:"
+echo "  USER_ID: ${USER_ID:-<not set>}"
+echo "  INSTANCE_ID: ${INSTANCE_ID:-<not set>}"
+echo "  MONITOR_API_KEY: ${MONITOR_API_KEY:+<set>} ${MONITOR_API_KEY:-<not set>}"
+echo "  FIREBASE_FUNCTIONS_URL: ${FIREBASE_FUNCTIONS_URL:-<not set>}"
+echo "  JUPYTER_TOKEN: ${JUPYTER_TOKEN:+<set>} ${JUPYTER_TOKEN:-<not set>}"
+echo ""
+
+echo "7. PID 1 process (container entrypoint):"
+ps aux | head -2
+echo ""
+
+echo "8. All Python processes:"
+ps aux | grep python | grep -v grep || echo "  No Python processes found"
+echo ""
+
+echo "9. All supervisor-related processes:"
+ps aux | grep -E "(supervisor|jupyter|turnserver|monitor)" | grep -v grep || echo "  No supervisor processes found"
+echo ""
+
+echo "10. Supervisor binary location:"
+if command -v supervisord >/dev/null 2>&1; then
+    echo "  ✅ Found at: $(which supervisord)"
+else
+    echo "  ❌ supervisord not found in PATH"
+    echo "  Searching for supervisord..."
+    find /usr -name supervisord 2>/dev/null || echo "  Not found"
+fi
+echo ""
+
+echo "=== Recommendations ==="
+echo ""
+if ! ps aux | grep -E "[s]upervisord" > /dev/null; then
+    echo "❌ Supervisord is not running. Try:"
+    echo "  1. Check Docker logs: docker logs <container_name>"
+    echo "  2. Try starting manually: /usr/local/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf -n"
+    echo "  3. Check for errors in the output above"
+fi
+

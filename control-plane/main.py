@@ -255,15 +255,20 @@ class ControlPlaneManager:
                 self.user_container.remove(force=True)
                 logger.info(f"User container stopped and removed: {self.user_container.id}")
             
-            # Update session status
+            # Update session status only if document exists
+            # This prevents creating a document after it's been destroyed
             session_ref = self.db.collection('sessions').document(self.instance_id)
-            session_ref.update({
-                'status': 'terminated',
-                'terminatedAt': firestore.SERVER_TIMESTAMP,
-                'terminationReason': reason
-            })
+            session_doc = session_ref.get()
             
-            logger.info(f"Session terminated successfully for user {self.user_id}")
+            if session_doc.exists:
+                session_ref.update({
+                    'status': 'terminated',
+                    'terminatedAt': firestore.SERVER_TIMESTAMP,
+                    'terminationReason': reason
+                })
+                logger.info(f"Session terminated successfully for user {self.user_id}")
+            else:
+                logger.warning(f"Session document {self.instance_id} does not exist, skipping update")
             
         except Exception as e:
             logger.error(f"Error terminating session: {e}")

@@ -93,9 +93,11 @@ class ServerConfig:
         ]
         
         if not self.is_local:
+            # Use turn_client_address (external IP + port) for client connections
+            # This matches what the frontend uses from Firestore
             ice_servers.append(
                 RTCIceServer(
-                    urls=f"turn:{self.turn_server_address}",
+                    urls=f"turn:{self.turn_client_address}",
                     username=self.turn_username,
                     credential=self.turn_password
                 )
