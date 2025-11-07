@@ -44,6 +44,42 @@ class MonitorService:
         self.session_started = False  # Track if we've marked session as started
         
         logger.info(f"Monitor service initialized for user {self.user_id}, instance {self.instance_id}, type {self.resource_type}")
+        
+        # Log environment variables for debugging (excluding sensitive values)
+        logger.info("=== Environment Variables ===")
+        logger.info(f"  USER_ID: {self.user_id}")
+        logger.info(f"  INSTANCE_ID: {self.instance_id}")
+        logger.info(f"  RESOURCE_TYPE: {self.resource_type}")
+        logger.info(f"  FIREBASE_FUNCTIONS_URL: {self.functions_url}")
+        logger.info(f"  MONITOR_API_KEY: {'<set>' if self.api_key else '<not set>'}")
+        
+        # Port mapping variables (VastAI identity ports)
+        vast_tcp_70000 = os.getenv('VAST_TCP_PORT_70000')
+        vast_udp_70001 = os.getenv('VAST_UDP_PORT_70001')
+        vast_tcp_70002 = os.getenv('VAST_TCP_PORT_70002')
+        vast_tcp_22 = os.getenv('VAST_TCP_PORT_22')
+        logger.info("  === Port Mapping Variables ===")
+        logger.info(f"  VAST_TCP_PORT_70000 (Python server): {vast_tcp_70000 or '<not set>'}")
+        logger.info(f"  VAST_UDP_PORT_70001 (TURN server): {vast_udp_70001 or '<not set>'}")
+        logger.info(f"  VAST_TCP_PORT_70002 (Jupyter): {vast_tcp_70002 or '<not set>'}")
+        logger.info(f"  VAST_TCP_PORT_22 (SSH): {vast_tcp_22 or '<not set>'}")
+        
+        # Network variables
+        public_ip = os.getenv('PUBLIC_IPADDR', '')
+        logger.info("  === Network Variables ===")
+        logger.info(f"  PUBLIC_IPADDR: {public_ip or '<not set>'}")
+        
+        # Service configuration
+        start_turn = os.getenv('START_TURN', '')
+        jupyter_token = os.getenv('JUPYTER_TOKEN', '')
+        turn_username = os.getenv('TURN_USERNAME', '')
+        turn_password = os.getenv('TURN_PASSWORD', '')
+        logger.info("  === Service Configuration ===")
+        logger.info(f"  START_TURN: {start_turn or '<not set>'}")
+        logger.info(f"  JUPYTER_TOKEN: {'<set>' if jupyter_token else '<not set>'}")
+        logger.info(f"  TURN_USERNAME: {turn_username or '<not set>'}")
+        logger.info(f"  TURN_PASSWORD: {'<set>' if turn_password else '<not set>'}")
+        logger.info("================================")
     
     async def update_turn_credentials(self):
         """Update TURN credentials in Firestore session document"""
@@ -109,9 +145,16 @@ class MonitorService:
             python_ready = python_result == 0
             
             if jupyter_ready and python_ready:
-                logger.info("Both Jupyter and Python server are ready")
+                # Only log at info level if this is the first time services are ready
+                # (to avoid spam when called from process health check)
+                if not hasattr(self, '_services_ready_logged'):
+                    logger.info("Both Jupyter and Python server are ready")
+                    self._services_ready_logged = True
                 return True
             else:
+                # Reset flag if services become unavailable
+                if hasattr(self, '_services_ready_logged'):
+                    self._services_ready_logged = False
                 if not jupyter_ready:
                     logger.debug("Jupyter server not ready yet (port 8888)")
                 if not python_ready:
@@ -215,7 +258,9 @@ class MonitorService:
             logger.info(f"Resumed charging for user {self.user_id}")
     
     def _check_process_health(self):
-        """Check if processes are running via supervisorctl"""
+        """Check if processes are running via supervisorctl, with fallback to socket checks"""
+        supervisorctl_available = False
+        
         try:
             # Ensure socket has correct permissions (watcher user needs group access)
             # This is a workaround if supervisord.conf chown doesn't work
@@ -242,64 +287,126 @@ class MonitorService:
                 timeout=5
             )
             
-            if result.returncode != 0:
-                # Log both stdout and stderr for debugging
+            if result.returncode == 0:
+                supervisorctl_available = True
+                # Check if critical processes are running
+                output = result.stdout
+                jupyter_running = 'jupyter' in output and 'RUNNING' in output
+                python_server_running = 'python_server' in output and 'RUNNING' in output
+                
+                if not jupyter_running:
+                    logger.warning("Jupyter server not running (supervisorctl), attempting restart")
+                    subprocess.run(['supervisorctl', '-c', '/etc/supervisor/conf.d/supervisord.conf', 'restart', 'jupyter'], timeout=10, capture_output=True)
+                
+                if not python_server_running:
+                    logger.warning("Python server not running (supervisorctl), attempting restart")
+                    subprocess.run(['supervisorctl', '-c', '/etc/supervisor/conf.d/supervisord.conf', 'restart', 'python_server'], timeout=10, capture_output=True)
+                
+                return jupyter_running and python_server_running
+            else:
+                # supervisorctl failed - log at debug level (not warning) since we have fallback
                 error_msg = result.stderr.strip() if result.stderr else "No error message"
                 output_msg = result.stdout.strip() if result.stdout else "No output"
-                logger.warning(f"supervisorctl status failed (returncode={result.returncode}): {error_msg}")
+                logger.debug(f"supervisorctl unavailable (returncode={result.returncode}): {error_msg}. Using fallback checks.")
                 if output_msg:
                     logger.debug(f"supervisorctl stdout: {output_msg}")
-                # Try alternative: check processes directly via ps
-                return self._check_processes_via_ps()
-            
-            # Check if critical processes are running
-            output = result.stdout
-            jupyter_running = 'jupyter' in output and 'RUNNING' in output
-            python_server_running = 'python_server' in output and 'RUNNING' in output
-            
-            if not jupyter_running:
-                logger.warning("Jupyter server not running, attempting restart")
-                subprocess.run(['supervisorctl', '-c', '/etc/supervisor/conf.d/supervisord.conf', 'restart', 'jupyter'], timeout=10)
-            
-            if not python_server_running:
-                logger.warning("Python server not running, attempting restart")
-                subprocess.run(['supervisorctl', '-c', '/etc/supervisor/conf.d/supervisord.conf', 'restart', 'python_server'], timeout=10)
-            
-            return True
             
         except subprocess.TimeoutExpired:
-            logger.error("supervisorctl command timed out")
-            return self._check_processes_via_ps()
+            logger.debug("supervisorctl command timed out, using fallback checks")
         except Exception as e:
-            logger.error(f"Error checking process health: {e}")
-            return self._check_processes_via_ps()
+            logger.debug(f"supervisorctl error: {e}, using fallback checks")
+        
+        # Fallback: Use socket checks (most reliable) and process checks
+        return self._check_processes_via_socket_and_ps()
     
-    def _check_processes_via_ps(self):
-        """Fallback: Check if processes are running via ps command"""
-        try:
-            import psutil
-            processes = {p.name(): p for p in psutil.process_iter(['name', 'cmdline'])}
-            
-            jupyter_running = any(
-                'jupyter' in p.info['name'].lower() or 
-                any('jupyter' in str(cmd).lower() for cmd in (p.info.get('cmdline') or []))
-                for p in processes.values()
-            )
-            
-            python_server_running = any(
-                'run_modular.py' in str(p.info.get('cmdline', []))
-                for p in processes.values()
-            )
-            
-            if not jupyter_running:
-                logger.warning("Jupyter server not running (checked via ps)")
-            if not python_server_running:
-                logger.warning("Python server not running (checked via ps)")
-            
-            return jupyter_running and python_server_running
-        except Exception as e:
-            logger.error(f"Error checking processes via ps: {e}")
-            return True  # Assume OK if we can't check
+    def _check_processes_via_socket_and_ps(self):
+        """Fallback: Check if processes are running via socket connections (most reliable) and psutil"""
+        # First, check sockets (most reliable method)
+        socket_check_passed = self._check_services_ready()
+        
+        if socket_check_passed:
+            # Services are accepting connections - they're definitely running
+            # Only log process check failures at debug level since socket check passed
+            try:
+                import psutil
+                processes = list(psutil.process_iter(['name', 'cmdline', 'pid', 'username']))
+                
+                jupyter_found = False
+                python_found = False
+                
+                for proc in processes:
+                    try:
+                        cmdline = proc.info.get('cmdline') or []
+                        cmdline_str = ' '.join(str(c) for c in cmdline)
+                        name = proc.info.get('name', '').lower()
+                        
+                        # Check for Jupyter
+                        if not jupyter_found:
+                            if 'jupyter' in name or 'jupyter' in cmdline_str.lower():
+                                jupyter_found = True
+                        
+                        # Check for Python server - look for multiple patterns
+                        if not python_found:
+                            if ('run_modular.py' in cmdline_str or 
+                                'server_modular' in cmdline_str or
+                                ('python' in name and 'run_modular' in cmdline_str)):
+                                python_found = True
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                
+                # Only log if socket check passed but process check failed (unusual case)
+                if not jupyter_found:
+                    logger.debug("Jupyter process not found via psutil (but socket check passed - service is running)")
+                if not python_found:
+                    logger.debug("Python server process not found via psutil (but socket check passed - service is running)")
+                
+                # Return socket check result (more reliable)
+                return socket_check_passed
+                
+            except Exception as e:
+                logger.debug(f"Error checking processes via psutil: {e}, but socket check passed")
+                return socket_check_passed  # Trust socket check
+        else:
+            # Socket check failed - services might not be running
+            # Check processes to see if they exist but aren't listening yet
+            try:
+                import psutil
+                processes = list(psutil.process_iter(['name', 'cmdline', 'pid', 'username']))
+                
+                jupyter_found = False
+                python_found = False
+                
+                for proc in processes:
+                    try:
+                        cmdline = proc.info.get('cmdline') or []
+                        cmdline_str = ' '.join(str(c) for c in cmdline)
+                        name = proc.info.get('name', '').lower()
+                        
+                        # Check for Jupyter
+                        if not jupyter_found:
+                            if 'jupyter' in name or 'jupyter' in cmdline_str.lower():
+                                jupyter_found = True
+                        
+                        # Check for Python server - look for multiple patterns
+                        if not python_found:
+                            if ('run_modular.py' in cmdline_str or 
+                                'server_modular' in cmdline_str or
+                                ('python' in name and 'run_modular' in cmdline_str)):
+                                python_found = True
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                
+                if not jupyter_found:
+                    logger.warning("Jupyter server not running: process not found and port 8888 not accepting connections")
+                if not python_found:
+                    logger.warning("Python server not running: process not found and port 8765 not accepting connections")
+                
+                return False
+                
+            except Exception as e:
+                logger.error(f"Error checking processes via psutil: {e}")
+                # If we can't check processes, trust socket check (more reliable)
+                return socket_check_passed
     
     async def terminate_session(self, reason: str):
         """Terminate the session via HTTP call, then exit"""
@@ -322,9 +429,124 @@ class MonitorService:
         # Exit the monitoring service (container will stop)
         sys.exit(0)
     
+    async def update_session_ports_and_ip(self):
+        """Update session document with ports and public IP from environment variables"""
+        try:
+            # Read VastAI identity port mappings from environment
+            # Identity ports (70000+) map to random external ports where internal = external
+            # VAST_TCP_PORT_70000 → Python server (internal: 8765)
+            # VAST_UDP_PORT_70001 → TURN server (internal: 3478)
+            # VAST_TCP_PORT_70002 → Jupyter (internal: 8888)
+            # VAST_TCP_PORT_22 → SSH (internal: 22)
+            vast_tcp_port_70000 = os.getenv('VAST_TCP_PORT_70000')  # Python server
+            vast_udp_port_70001 = os.getenv('VAST_UDP_PORT_70001')  # TURN server
+            vast_tcp_port_70002 = os.getenv('VAST_TCP_PORT_70002')  # Jupyter
+            vast_tcp_port_22 = os.getenv('VAST_TCP_PORT_22')  # SSH
+            public_ip = os.getenv('PUBLIC_IPADDR', '')
+            
+            # If PUBLIC_IPADDR is "auto" or empty, try to detect it
+            if not public_ip or public_ip == "auto":
+                try:
+                    # Try DigitalOcean metadata first
+                    import urllib.request
+                    try:
+                        with urllib.request.urlopen('http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address', timeout=2) as response:
+                            public_ip = response.read().decode('utf-8').strip()
+                            logger.info(f"Detected public IP from metadata: {public_ip}")
+                    except Exception:
+                        # Fallback to external service
+                        try:
+                            with urllib.request.urlopen('https://ifconfig.co', timeout=3) as response:
+                                public_ip = response.read().decode('utf-8').strip()
+                                logger.info(f"Detected public IP from ifconfig.co: {public_ip}")
+                        except Exception as e:
+                            logger.warning(f"Could not detect public IP: {e}")
+                            public_ip = None
+                except Exception as e:
+                    logger.warning(f"Error detecting public IP: {e}")
+                    public_ip = None
+            
+            # Build ports array with objects containing label, internal, external, and protocol
+            # Format: [{"label": "python", "internal": 8765, "external": 63562, "protocol": "tcp"}, ...]
+            ports = []
+            
+            # Python server: 70000 → 8765
+            if vast_tcp_port_70000:
+                try:
+                    external_port = int(vast_tcp_port_70000)
+                    ports.append({
+                        "label": "python",
+                        "internal": 8765,
+                        "external": external_port,
+                        "protocol": "tcp"
+                    })
+                except ValueError:
+                    logger.warning(f"Invalid VAST_TCP_PORT_70000: {vast_tcp_port_70000}")
+            
+            # TURN server: 70001 → 3478
+            if vast_udp_port_70001:
+                try:
+                    external_port = int(vast_udp_port_70001)
+                    ports.append({
+                        "label": "turn",
+                        "internal": 3478,
+                        "external": external_port,
+                        "protocol": "udp"
+                    })
+                except ValueError:
+                    logger.warning(f"Invalid VAST_UDP_PORT_70001: {vast_udp_port_70001}")
+            
+            # Jupyter: 70002 → 8888
+            if vast_tcp_port_70002:
+                try:
+                    external_port = int(vast_tcp_port_70002)
+                    ports.append({
+                        "label": "jupyter",
+                        "internal": 8888,
+                        "external": external_port,
+                        "protocol": "tcp"
+                    })
+                except ValueError:
+                    logger.warning(f"Invalid VAST_TCP_PORT_70002: {vast_tcp_port_70002}")
+            
+            # SSH: 22 → 22
+            if vast_tcp_port_22:
+                try:
+                    external_port = int(vast_tcp_port_22)
+                    ports.append({
+                        "label": "ssh",
+                        "internal": 22,
+                        "external": external_port,
+                        "protocol": "tcp"
+                    })
+                except ValueError:
+                    logger.warning(f"Invalid VAST_TCP_PORT_22: {vast_tcp_port_22}")
+            
+            # Only update if we have at least ports or IP
+            if ports or public_ip:
+                result = await self._call_function('updateSessionPorts', {
+                    'instanceId': self.instance_id,
+                    'publicIp': public_ip if public_ip else None,
+                    'ports': ports if ports else None,
+                })
+                
+                if result and result.get('success'):
+                    logger.info(f"Session ports and IP updated: ports={ports}, publicIp={public_ip}")
+                else:
+                    logger.warning(f"Failed to update session ports/IP: {result.get('error', 'Unknown error') if result else 'No response'}")
+            else:
+                logger.debug("No port/IP information available from environment variables yet")
+                
+        except Exception as e:
+            logger.error(f"Error updating session ports/IP: {e}")
+    
     async def monitor_loop(self):
         """Main monitoring loop - checks services ready, credits, heartbeat, and process health"""
         logger.info("Starting monitoring loop")
+        
+        # Update session ports and IP from environment variables on startup
+        # This ensures the session document has the correct external ports and IP
+        await self.update_session_ports_and_ip()
         
         # Update TURN credentials in Firestore on startup
         # This ensures the frontend can retrieve them for WebRTC connection
@@ -334,13 +556,17 @@ class MonitorService:
             try:
                 await asyncio.sleep(60)  # Check every minute
                 
-                # Check process health
-                self._check_process_health()
+                # Check process health (logs warnings only if services are actually down)
+                process_health_ok = self._check_process_health()
                 
                 # If session is still provisioning, check if services are ready
                 if not self.session_started:
-                    if self._check_services_ready():
+                    services_ready = self._check_services_ready()
+                    if services_ready:
                         await self._mark_session_started()
+                    elif not process_health_ok:
+                        # Services not ready and process health check failed
+                        logger.warning("Services not ready yet - waiting for Jupyter and Python server to start")
                 
                 # If session is started/running, check credits remaining
                 if self.session_started:

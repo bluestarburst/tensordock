@@ -113,9 +113,10 @@ RUN rm -rf /app/control-plane
 # Create log directories
 RUN mkdir -p /var/log/supervisor /app/logs
 
-# Copy diagnostic script
+# Copy diagnostic scripts
 COPY tensordock/diagnose-container.sh /app/diagnose-container.sh
-RUN chmod +x /app/diagnose-container.sh
+COPY tensordock/show-env-vars.sh /app/show-env-vars.sh
+RUN chmod +x /app/diagnose-container.sh /app/show-env-vars.sh
 
 # Copy supervisor config
 COPY tensordock/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
@@ -145,4 +146,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Note: supervisor is installed via pip, so it's in /usr/local/bin
 # Environment variables are passed from Docker and available to supervisord
 # The supervisord.conf uses %(ENV_VAR_NAME)s to access them
+#
+# IMPORTANT: This CMD is the default/fallback for local testing and non-VastAI deployments.
+# When VastAI uses the 'onstart' field, it OVERRIDES this CMD.
+# The VastAI onstart command (in vastai-provider.ts) includes export of VAST_* variables
+# before starting supervisord, which is required for VastAI port mappings.
 CMD ["/usr/local/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf", "-n"]
