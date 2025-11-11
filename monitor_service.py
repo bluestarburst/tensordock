@@ -42,6 +42,7 @@ class MonitorService:
         self.grace_period_start: Optional[float] = None
         self.is_charging = True
         self.session_started = False  # Track if we've marked session as started
+        self.start_turn = os.getenv('START_TURN', 'true').lower() == 'true'
         
         logger.info(f"Monitor service initialized for user {self.user_id}, instance {self.instance_id}, type {self.resource_type}")
         
@@ -127,6 +128,30 @@ class MonitorService:
             logger.error(f"Error calling {function_name}: {e}")
             return None
     
+    def _check_turn_server_process(self) -> bool:
+        """Check if the TURN server process is running using psutil."""
+        if not self.start_turn:
+            return True  # Not required to be running
+        try:
+            import psutil
+            for proc in psutil.process_iter(['name', 'cmdline']):
+                try:
+                    cmdline = proc.info.get('cmdline') or []
+                    cmdline_str = ' '.join(str(c) for c in cmdline)
+                    if 'turnserver' in cmdline_str:
+                        logger.debug("TURN server process found.")
+                        return True
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            logger.debug("TURN server process not found.")
+            return False
+        except ImportError:
+            logger.warning("psutil is not installed, cannot check TURN server process health. Assuming it's running.")
+            return True # Fail open if psutil isn't installed
+        except Exception as e:
+            logger.error(f"Error checking TURN server process: {e}")
+            return False
+
     def _check_services_ready(self) -> bool:
         """Check if Jupyter (port 8888) and Python server (port 8765) are accepting connections"""
         try:
@@ -144,11 +169,14 @@ class MonitorService:
             python_socket.close()
             python_ready = python_result == 0
             
-            if jupyter_ready and python_ready:
+            # Check TURN server process if it's supposed to start
+            turn_ready = self._check_turn_server_process()
+
+            if jupyter_ready and python_ready and turn_ready:
                 # Only log at info level if this is the first time services are ready
                 # (to avoid spam when called from process health check)
                 if not hasattr(self, '_services_ready_logged'):
-                    logger.info("Both Jupyter and Python server are ready")
+                    logger.info("All services (Jupyter, Python server, TURN server) are ready")
                     self._services_ready_logged = True
                 return True
             else:
@@ -159,6 +187,8 @@ class MonitorService:
                     logger.debug("Jupyter server not ready yet (port 8888)")
                 if not python_ready:
                     logger.debug("Python server not ready yet (port 8765)")
+                if not turn_ready:
+                    logger.debug("TURN server process not ready yet.")
                 return False
                 
         except Exception as e:
@@ -293,6 +323,7 @@ class MonitorService:
                 output = result.stdout
                 jupyter_running = 'jupyter' in output and 'RUNNING' in output
                 python_server_running = 'python_server' in output and 'RUNNING' in output
+                turn_server_running = not self.start_turn or ('turn_server' in output and 'RUNNING' in output)
                 
                 if not jupyter_running:
                     logger.warning("Jupyter server not running (supervisorctl), attempting restart")
@@ -302,7 +333,11 @@ class MonitorService:
                     logger.warning("Python server not running (supervisorctl), attempting restart")
                     subprocess.run(['supervisorctl', '-c', '/etc/supervisor/conf.d/supervisord.conf', 'restart', 'python_server'], timeout=10, capture_output=True)
                 
-                return jupyter_running and python_server_running
+                if not turn_server_running and self.start_turn:
+                    logger.warning("TURN server not running (supervisorctl), attempting restart")
+                    subprocess.run(['supervisorctl', '-c', '/etc/supervisor/conf.d/supervisord.conf', 'restart', 'turn_server'], timeout=10, capture_output=True)
+
+                return jupyter_running and python_server_running and turn_server_running
             else:
                 # supervisorctl failed - log at debug level (not warning) since we have fallback
                 error_msg = result.stderr.strip() if result.stderr else "No error message"
@@ -333,6 +368,7 @@ class MonitorService:
                 
                 jupyter_found = False
                 python_found = False
+                turn_found = not self.start_turn # True if not required
                 
                 for proc in processes:
                     try:
@@ -351,6 +387,11 @@ class MonitorService:
                                 'server_modular' in cmdline_str or
                                 ('python' in name and 'run_modular' in cmdline_str)):
                                 python_found = True
+
+                        # Check for TURN server
+                        if not turn_found and self.start_turn:
+                            if 'turnserver' in cmdline_str:
+                                turn_found = True
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         continue
                 
@@ -359,9 +400,11 @@ class MonitorService:
                     logger.debug("Jupyter process not found via psutil (but socket check passed - service is running)")
                 if not python_found:
                     logger.debug("Python server process not found via psutil (but socket check passed - service is running)")
+                if not turn_found and self.start_turn:
+                    logger.debug("TURN server process not found via psutil (but socket check passed for others)")
                 
                 # Return socket check result (more reliable)
-                return socket_check_passed
+                return socket_check_passed and turn_found
                 
             except Exception as e:
                 logger.debug(f"Error checking processes via psutil: {e}, but socket check passed")
@@ -375,6 +418,7 @@ class MonitorService:
                 
                 jupyter_found = False
                 python_found = False
+                turn_found = not self.start_turn # True if not required
                 
                 for proc in processes:
                     try:
@@ -393,6 +437,11 @@ class MonitorService:
                                 'server_modular' in cmdline_str or
                                 ('python' in name and 'run_modular' in cmdline_str)):
                                 python_found = True
+
+                        # Check for TURN server
+                        if not turn_found and self.start_turn:
+                            if 'turnserver' in cmdline_str:
+                                turn_found = True
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         continue
                 
@@ -400,6 +449,8 @@ class MonitorService:
                     logger.warning("Jupyter server not running: process not found and port 8888 not accepting connections")
                 if not python_found:
                     logger.warning("Python server not running: process not found and port 8765 not accepting connections")
+                if not turn_found and self.start_turn:
+                    logger.warning("TURN server not running: process not found")
                 
                 return False
                 

@@ -1,7 +1,7 @@
 aiohappyeyeballs==2.6.1
-aiohttp==3.13.2
-aioice==0.9.0
-aiortc==1.9.0
+aiohttp==3.9.1
+aioice==0.8.0
+aiortc==1.6.0
 aiosignal==1.4.0
 anyio==4.10.0
 argon2-cffi==21.3.0
@@ -42,7 +42,7 @@ jupyter-console==6.6.3
 jupyter_core==5.8.1
 jupyter-events==0.12.0
 jupyter-lsp==2.2.5
-jupyter_server==2.16.0
+jupyter_server==2.12.5
 jupyter_server_terminals==0.5.3
 jupyterlab==4.4.7
 jupyterlab_pygments==0.3.0
@@ -68,7 +68,7 @@ platformdirs==4.3.7
 prometheus_client==0.21.1
 prompt_toolkit==3.0.52
 propcache==0.4.1
-psutil==7.0.0
+psutil==5.9.8
 ptyprocess==0.7.0
 pure_eval==0.2.3
 pycparser==2.23
