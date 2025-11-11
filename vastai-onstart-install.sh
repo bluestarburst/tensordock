@@ -276,6 +276,40 @@ if [ -d "/app/control-plane" ]; then
     rm -rf /app/control-plane
 fi
 
+# Install build dependencies for Python packages (especially PyAV/av)
+log "Installing build dependencies for Python packages..."
+apt-get update -qq || true
+
+# Install essential build tools (required)
+apt-get install -y --no-install-recommends \
+    pkg-config \
+    python3-dev \
+    build-essential 2>/dev/null || {
+    log "ERROR: Failed to install essential build tools"
+    exit 1
+}
+
+# Install FFmpeg development libraries (required for PyAV)
+# Try to install dev packages, fallback gracefully if not available
+log "Installing FFmpeg development libraries..."
+apt-get install -y --no-install-recommends \
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libavfilter-dev \
+    libavdevice-dev 2>/dev/null || {
+    log "WARNING: FFmpeg dev packages may not be available, PyAV may fail to build"
+    log "Attempting to install without version numbers..."
+    # Try without version-specific names (Ubuntu 24.04 may use different naming)
+    apt-get install -y --no-install-recommends \
+        ffmpeg \
+        libavcodec-dev \
+        libavformat-dev 2>/dev/null || {
+        log "WARNING: FFmpeg libraries not available - PyAV installation may fail"
+    }
+}
+
 # Install Python dependencies
 log "Installing Python dependencies..."
 if [ -f "/app/requirements.txt" ]; then
