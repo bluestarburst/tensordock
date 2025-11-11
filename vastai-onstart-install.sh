@@ -12,6 +12,17 @@ log() {
 
 log "Starting TensorDock installation on VastAI PyTorch template"
 
+# Diagnostic: Check initial state
+log "=== Initial Diagnostic Information ==="
+log "Current working directory: $(pwd)"
+log "Current user: $(whoami)"
+log "User ID: $(id -u)"
+log "Checking if /app exists: $([ -d /app ] && echo 'YES' || echo 'NO')"
+log "Checking if /app is writable: $([ -w /app ] && echo 'YES' || echo 'NO' 2>/dev/null || echo 'N/A (does not exist)')"
+log "Root filesystem info:"
+df -h / | tail -1
+log "======================================"
+
 # Export VAST_* environment variables (set by VastAI)
 log "Exporting VastAI port environment variables..."
 for var in $(env | grep -E '^VAST_' | cut -d= -f1); do
@@ -86,10 +97,17 @@ fi
 
 # Install multimedia libraries (optional, don't fail if unavailable)
 log "Installing multimedia libraries (optional)..."
+# Install basic multimedia libraries (these are commonly available across Ubuntu versions)
+# Note: FFmpeg library versions vary by Ubuntu release, so we only install the most common ones
 apt-get install -y --no-install-recommends \
-    libavdevice59 libavformat59 libavfilter8 libavcodec59 libavutil57 libswscale6 \
-    libopus0 libvpx7 libsrtp2-1 2>/dev/null || {
+    libopus0 libsrtp2-1 2>/dev/null || {
     log "WARNING: Some multimedia libraries failed to install (non-critical)"
+}
+# Try to install libvpx (version may vary: libvpx7 for older, libvpx9 for newer)
+apt-get install -y --no-install-recommends libvpx9 2>/dev/null || \
+apt-get install -y --no-install-recommends libvpx7 2>/dev/null || \
+apt-get install -y --no-install-recommends libvpx6 2>/dev/null || {
+    log "WARNING: libvpx not available (non-critical)"
 }
 
 # Clean up apt cache
@@ -97,24 +115,120 @@ rm -rf /var/lib/apt/lists/*
 
 # Create users if they don't exist
 log "Creating users..."
-if ! id -u appuser >/dev/null 2>&1; then
-    useradd -m -u 1000 -s /bin/bash appuser
-    log "Created user: appuser (UID 1000)"
+
+# Helper function to check if a UID is taken
+uid_taken() {
+    local uid=$1
+    getent passwd "$uid" >/dev/null 2>&1
+}
+
+# Helper function to get username for a UID
+get_username_for_uid() {
+    local uid=$1
+    getent passwd "$uid" | cut -d: -f1 2>/dev/null || echo "unknown"
+}
+
+# Helper function to find next available UID
+find_available_uid() {
+    local start_uid=$1
+    local max_attempts=${2:-10}
+    local uid=$start_uid
+    local attempts=0
+    
+    while [ $attempts -lt $max_attempts ]; do
+        if ! uid_taken "$uid"; then
+            echo "$uid"
+            return 0
+        fi
+        uid=$((uid + 1))
+        attempts=$((attempts + 1))
+    done
+    return 1
+}
+
+# Check if appuser exists
+if ! id appuser >/dev/null 2>&1; then
+    # Check if UID 1000 is already taken by another user
+    if uid_taken 1000; then
+        EXISTING_USER=$(get_username_for_uid 1000)
+        log "UID 1000 is already taken by user: $EXISTING_USER"
+        # Find next available UID starting from 1002
+        AVAILABLE_UID=$(find_available_uid 1002 20)
+        if [ -n "$AVAILABLE_UID" ]; then
+            if useradd -m -u "$AVAILABLE_UID" -s /bin/bash appuser; then
+                log "Created user: appuser (UID $AVAILABLE_UID, UID 1000 was taken by $EXISTING_USER)"
+            else
+                log "ERROR: Failed to create appuser with UID $AVAILABLE_UID"
+                exit 1
+            fi
+        else
+            log "ERROR: Could not find available UID for appuser"
+            exit 1
+        fi
+    else
+        # UID 1000 is available, use it
+        if useradd -m -u 1000 -s /bin/bash appuser; then
+            log "Created user: appuser (UID 1000)"
+        else
+            log "ERROR: Failed to create appuser with UID 1000"
+            exit 1
+        fi
+    fi
 else
-    log "User appuser already exists"
+    log "User appuser already exists (UID: $(id -u appuser))"
 fi
 
-if ! id -u watcher >/dev/null 2>&1; then
-    useradd -m -u 1001 -s /bin/bash watcher
-    log "Created user: watcher (UID 1001)"
+# Check if watcher exists
+if ! id watcher >/dev/null 2>&1; then
+    # Check if UID 1001 is already taken
+    if uid_taken 1001; then
+        EXISTING_USER=$(get_username_for_uid 1001)
+        log "UID 1001 is already taken by user: $EXISTING_USER"
+        # Find next available UID starting from 1002 (but skip if it's appuser's UID)
+        APPUSER_UID=$(id -u appuser 2>/dev/null || echo "")
+        AVAILABLE_UID=$(find_available_uid 1002 20)
+        # If the found UID is appuser's UID, try next one
+        while [ -n "$AVAILABLE_UID" ] && [ "$AVAILABLE_UID" = "$APPUSER_UID" ]; do
+            AVAILABLE_UID=$(find_available_uid $((AVAILABLE_UID + 1)) 20)
+        done
+        if [ -n "$AVAILABLE_UID" ]; then
+            if useradd -m -u "$AVAILABLE_UID" -s /bin/bash watcher; then
+                log "Created user: watcher (UID $AVAILABLE_UID, UID 1001 was taken by $EXISTING_USER)"
+            else
+                log "ERROR: Failed to create watcher with UID $AVAILABLE_UID"
+                exit 1
+            fi
+        else
+            log "ERROR: Could not find available UID for watcher"
+            exit 1
+        fi
+    else
+        if useradd -m -u 1001 -s /bin/bash watcher; then
+            log "Created user: watcher (UID 1001)"
+        else
+            log "ERROR: Failed to create watcher with UID 1001"
+            exit 1
+        fi
+    fi
 else
-    log "User watcher already exists"
+    log "User watcher already exists (UID: $(id -u watcher))"
 fi
 
 # Create app directory
 log "Setting up application directory..."
-mkdir -p /app
-cd /app
+if ! mkdir -p /app; then
+    log "ERROR: Failed to create /app directory"
+    exit 1
+fi
+
+if ! cd /app; then
+    log "ERROR: Failed to change to /app directory"
+    exit 1
+fi
+
+log "Application directory created successfully at: $(pwd)"
+log "Current directory contents:"
+ls -la /app/ 2>/dev/null || log "  (directory is empty or cannot list)"
 
 # Download application code from GitHub
 log "Downloading application code from GitHub..."
@@ -129,10 +243,31 @@ if [ -d "/app/.git" ]; then
 else
     log "Cloning repository from ${GITHUB_REPO} (branch: ${GITHUB_BRANCH})..."
     rm -rf /app/* /app/.* 2>/dev/null || true
-    git clone --depth 1 --branch "${GITHUB_BRANCH}" "${GITHUB_REPO}" /app || {
-        log "ERROR: Failed to clone repository"
+    
+    # Verify /app directory exists before cloning
+    if [ ! -d "/app" ]; then
+        log "ERROR: /app directory does not exist before git clone"
         exit 1
-    }
+    fi
+    
+    if ! git clone --depth 1 --branch "${GITHUB_BRANCH}" "${GITHUB_REPO}" /app; then
+        log "ERROR: Failed to clone repository"
+        log "Checking /app directory state:"
+        ls -la /app/ 2>/dev/null || log "  /app directory does not exist or is not accessible"
+        exit 1
+    fi
+    
+    # Verify clone succeeded
+    if [ ! -d "/app/.git" ]; then
+        log "ERROR: Git clone completed but .git directory not found"
+        log "Checking /app directory contents:"
+        ls -la /app/ 2>/dev/null || log "  /app directory does not exist or is not accessible"
+        exit 1
+    fi
+    
+    log "Repository cloned successfully"
+    log "Verifying /app directory contents:"
+    ls -la /app/ | head -20
 fi
 
 # Remove control-plane directory if it exists
@@ -173,15 +308,30 @@ mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" \
 
 # Copy supervisord.conf
 log "Setting up supervisord configuration..."
+SUPERVISORD_CONF=""
 if [ -f "/app/supervisord.conf" ]; then
+    SUPERVISORD_CONF="/app/supervisord.conf"
+    log "Found supervisord.conf at /app/supervisord.conf"
+elif [ -f "/app/tensordock/supervisord.conf" ]; then
+    SUPERVISORD_CONF="/app/tensordock/supervisord.conf"
+    log "Found supervisord.conf at /app/tensordock/supervisord.conf"
+else
+    log "ERROR: supervisord.conf not found in /app or /app/tensordock"
+    log "Checking /app directory contents:"
+    ls -la /app/ | head -20
+    if [ -d "/app/tensordock" ]; then
+        log "Checking /app/tensordock directory contents:"
+        ls -la /app/tensordock/ | head -20
+    fi
+    exit 1
+fi
+
+if [ -n "$SUPERVISORD_CONF" ]; then
     mkdir -p /etc/supervisor/conf.d
-    cp /app/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+    cp "$SUPERVISORD_CONF" /etc/supervisor/conf.d/supervisord.conf
     chown root:root /etc/supervisor/conf.d/supervisord.conf
     chmod 644 /etc/supervisor/conf.d/supervisord.conf
-    log "Supervisord configuration copied"
-else
-    log "ERROR: supervisord.conf not found in /app"
-    exit 1
+    log "Supervisord configuration copied from $SUPERVISORD_CONF"
 fi
 
 # Set proper file ownership and permissions
