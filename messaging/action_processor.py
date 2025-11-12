@@ -660,6 +660,31 @@ class ActionProcessor(LoggerMixin):
             # Assume localhost if no protocol
             return f"ws://localhost:8888{url}"
     
+    def get_status(self) -> Dict[str, Any]:
+        """Get action processor status."""
+        uptime = datetime.datetime.now() - self.action_stats['start_time']
+        total = self.action_stats['total_actions']
+        success_rate = (self.action_stats['successful_actions'] / max(total, 1)) * 100
+        
+        return {
+            'total_handlers': len(self.action_handlers),
+            'total_actions': total,
+            'successful_actions': self.action_stats['successful_actions'],
+            'failed_actions': self.action_stats['failed_actions'],
+            'success_rate': success_rate,
+            'actions_by_type': dict(self.action_stats['actions_by_type']),
+            'uptime_seconds': uptime.total_seconds(),
+            'start_time': self.action_stats['start_time'].isoformat(),
+            'jupyter_manager_available': self.jupyter_manager is not None,
+            'broadcast_callback_available': self.broadcast_callback is not None,
+            'http_proxy_service_available': self.http_proxy_service is not None,
+            'canvas_service_available': self.canvas_service is not None,
+            'widget_service_available': self.widget_service is not None,
+            'websocket_bridge_available': self.websocket_bridge is not None,
+            'peer_manager_available': self.peer_manager is not None,
+            'available_actions': list(self.action_handlers.keys())
+        }
+    
     async def cleanup(self):
         """Clean up action processor resources."""
         debug_log(f"🧹 [ActionProcessor] Cleaning up action processor")

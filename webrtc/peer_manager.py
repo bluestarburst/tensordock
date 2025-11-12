@@ -315,9 +315,10 @@ class WebRTCPeerManager(LoggerMixin):
     
     def get_status(self) -> Dict[str, Any]:
         """Get WebRTC peer manager status."""
+        connected_clients = self.get_connected_clients()
         return {
             'peer_connections': len(self.peer_connections),
-            'connected_clients': len(self.get_connected_clients()),
+            'connected_clients': len(connected_clients),
             'message_handlers': len(self.message_handlers),
-            'data_channels_ready': self.data_channel_manager.get_connected_clients_count() if hasattr(self.data_channel_manager, 'get_connected_clients_count') else len(self.get_connected_clients())
+            'data_channels_ready': len(self.data_channel_manager.get_connected_clients())
         }
