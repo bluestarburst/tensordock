@@ -313,7 +313,9 @@ apt-get install -y --no-install-recommends \
 # Install Python dependencies
 log "Installing Python dependencies..."
 if [ -f "/app/requirements.txt" ]; then
-    pip install --no-cache-dir -r /app/requirements.txt || {
+    # Use --break-system-packages for Python 3.12+ to handle system-installed packages
+    # and --ignore-installed to avoid conflicts with system packages
+    pip install --no-cache-dir --break-system-packages --ignore-installed -r /app/requirements.txt || {
         log "ERROR: Failed to install Python dependencies"
         exit 1
     }
@@ -433,6 +435,14 @@ fi
 SUPERVISORD_PATH=$(which supervisord)
 log "Supervisord found at: $SUPERVISORD_PATH"
 
+# Set default empty values for VAST_* environment variables if not set
+# Supervisord requires these variables to exist when parsing the config file
+# Even if empty, they must be defined for %(ENV_VAR_NAME)s syntax to work
+export VAST_TCP_PORT_70000="${VAST_TCP_PORT_70000:-}"
+export VAST_UDP_PORT_70001="${VAST_UDP_PORT_70001:-}"
+export VAST_TCP_PORT_70002="${VAST_TCP_PORT_70002:-}"
+export VAST_TCP_PORT_22="${VAST_TCP_PORT_22:-}"
+
 # Start supervisord as PID 1
 log "Starting supervisord..."
 log "Environment variables:"
@@ -444,6 +454,7 @@ log "  PUBLIC_IPADDR: ${PUBLIC_IPADDR:-<not set>}"
 log "  VAST_TCP_PORT_70000: ${VAST_TCP_PORT_70000:-<not set>}"
 log "  VAST_UDP_PORT_70001: ${VAST_UDP_PORT_70001:-<not set>}"
 log "  VAST_TCP_PORT_70002: ${VAST_TCP_PORT_70002:-<not set>}"
+log "  VAST_TCP_PORT_22: ${VAST_TCP_PORT_22:-<not set>}"
 
 exec "$SUPERVISORD_PATH" -c /etc/supervisor/conf.d/supervisord.conf -n
 
