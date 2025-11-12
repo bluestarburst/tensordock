@@ -533,17 +533,6 @@ chmod 755 /app/start.sh 2>/dev/null || true
 # Make diagnostic scripts executable
 chmod +x /app/diagnose-container.sh /app/show-env-vars.sh 2>/dev/null || true
 
-# Configure SSH server
-log "Configuring SSH server..."
-mkdir -p /var/run/sshd
-if ! grep -q "^PermitRootLogin yes" /etc/ssh/sshd_config 2>/dev/null; then
-    echo 'root:root' | chpasswd
-    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config || true
-    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
-    echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config || true
-    log "SSH server configured"
-fi
-
 # Set up TURN server environment variables
 log "Setting up TURN server configuration..."
 if [ -z "${TURN_USERNAME:-}" ]; then
@@ -590,6 +579,30 @@ export VAST_TCP_PORT_70000="${VAST_TCP_PORT_70000:-}"
 export VAST_UDP_PORT_70001="${VAST_UDP_PORT_70001:-}"
 export VAST_TCP_PORT_70002="${VAST_TCP_PORT_70002:-}"
 export VAST_TCP_PORT_22="${VAST_TCP_PORT_22:-}"
+
+# Clean up supervisor socket if it exists from previous run
+# This ensures supervisord can create it fresh with correct permissions (chown directive)
+if [ -S /var/run/supervisor.sock ]; then
+    log "Removing existing supervisor socket to ensure correct permissions..."
+    rm -f /var/run/supervisor.sock
+fi
+
+# Ensure socket directory exists and has correct permissions
+mkdir -p /var/run
+chmod 1777 /var/run
+
+# Verify watcher user and group exist (should be created earlier in script)
+if id watcher >/dev/null 2>&1; then
+    log "Watcher user exists: $(id watcher)"
+    # Verify watcher is in watcher group (should be primary group)
+    if groups watcher | grep -q watcher; then
+        log "Watcher user is in watcher group (correct)"
+    else
+        log "WARNING: Watcher user may not be in watcher group"
+    fi
+else
+    log "WARNING: Watcher user does not exist - supervisor socket permissions may not work"
+fi
 
 # Start supervisord as PID 1
 log "Starting supervisord..."

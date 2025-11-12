@@ -155,19 +155,74 @@ class MonitorService:
     def _check_services_ready(self) -> bool:
         """Check if Jupyter (port 8888) and Python server (port 8765) are accepting connections"""
         try:
-            # Check Jupyter on port 8888
-            jupyter_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            jupyter_socket.settimeout(2)
-            jupyter_result = jupyter_socket.connect_ex(('localhost', 8888))
-            jupyter_socket.close()
-            jupyter_ready = jupyter_result == 0
+            # Check Jupyter on port 8888 - try both localhost and 127.0.0.1
+            jupyter_ready = False
+            jupyter_error = None
+            for host in ['127.0.0.1', 'localhost']:
+                try:
+                    jupyter_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    jupyter_socket.settimeout(2)
+                    jupyter_result = jupyter_socket.connect_ex((host, 8888))
+                    jupyter_socket.close()
+                    if jupyter_result == 0:
+                        jupyter_ready = True
+                        break
+                    else:
+                        jupyter_error = f"Connection failed with error code {jupyter_result}"
+                except Exception as e:
+                    jupyter_error = str(e)
+                    logger.debug(f"Error connecting to Jupyter on {host}:8888: {e}")
+                    continue
             
-            # Check Python server on port 8765
-            python_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            python_socket.settimeout(2)
-            python_result = python_socket.connect_ex(('localhost', 8765))
-            python_socket.close()
-            python_ready = python_result == 0
+            # Check Python server on port 8765 - try both localhost and 127.0.0.1
+            python_ready = False
+            python_error = None
+            for host in ['127.0.0.1', 'localhost']:
+                try:
+                    python_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    python_socket.settimeout(2)
+                    python_result = python_socket.connect_ex((host, 8765))
+                    python_socket.close()
+                    if python_result == 0:
+                        python_ready = True
+                        break
+                    else:
+                        python_error = f"Connection failed with error code {python_result}"
+                except Exception as e:
+                    python_error = str(e)
+                    logger.debug(f"Error connecting to Python server on {host}:8765: {e}")
+                    continue
+            
+            # If socket checks fail, try checking if ports are listening using ss/netstat
+            if not jupyter_ready:
+                port_listening = self._check_port_listening(8888)
+                if port_listening:
+                    # Port is listening but not accepting connections - might be starting up
+                    if not hasattr(self, '_jupyter_port_listening_logged'):
+                        logger.info("Jupyter port 8888 is listening but not accepting connections yet (service may be starting)")
+                        self._jupyter_port_listening_logged = True
+                else:
+                    # Log first time we detect port not listening
+                    if not hasattr(self, '_jupyter_port_not_listening_logged'):
+                        logger.info(f"Jupyter port 8888 not listening: {jupyter_error or 'connection refused'}")
+                        self._jupyter_port_not_listening_logged = True
+                    else:
+                        logger.debug(f"Jupyter port 8888 not listening: {jupyter_error or 'connection refused'}")
+            
+            if not python_ready:
+                port_listening = self._check_port_listening(8765)
+                if port_listening:
+                    # Port is listening but not accepting connections - might be starting up
+                    if not hasattr(self, '_python_port_listening_logged'):
+                        logger.info("Python server port 8765 is listening but not accepting connections yet (service may be starting)")
+                        self._python_port_listening_logged = True
+                else:
+                    # Log first time we detect port not listening
+                    if not hasattr(self, '_python_port_not_listening_logged'):
+                        logger.info(f"Python server port 8765 not listening: {python_error or 'connection refused'}")
+                        self._python_port_not_listening_logged = True
+                    else:
+                        logger.debug(f"Python server port 8765 not listening: {python_error or 'connection refused'}")
             
             # Check TURN server process if it's supposed to start
             turn_ready = self._check_turn_server_process()
@@ -183,17 +238,39 @@ class MonitorService:
                 # Reset flag if services become unavailable
                 if hasattr(self, '_services_ready_logged'):
                     self._services_ready_logged = False
-                if not jupyter_ready:
-                    logger.debug("Jupyter server not ready yet (port 8888)")
-                if not python_ready:
-                    logger.debug("Python server not ready yet (port 8765)")
-                if not turn_ready:
-                    logger.debug("TURN server process not ready yet.")
+                # Only log at debug level to avoid spam - detailed info already logged above
                 return False
                 
         except Exception as e:
             logger.error(f"Error checking service readiness: {e}")
             return False
+    
+    def _check_port_listening(self, port: int) -> bool:
+        """Check if a port is listening using ss or netstat as fallback"""
+        try:
+            # Try ss first (more common on modern systems)
+            result = subprocess.run(
+                ['ss', '-tln', f'sport = :{port}'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0 and str(port) in result.stdout:
+                return True
+            
+            # Fallback to netstat
+            result = subprocess.run(
+                ['netstat', '-tln'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0 and f':{port}' in result.stdout:
+                return True
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+            logger.debug(f"Could not check port {port} via ss/netstat: {e}")
+        
+        return False
     
     async def _mark_session_started(self):
         """Mark session as started (set status to running and startTime)"""
@@ -325,6 +402,13 @@ class MonitorService:
                 python_server_running = 'python_server' in output and 'RUNNING' in output
                 turn_server_running = not self.start_turn or ('turn_server' in output and 'RUNNING' in output)
                 
+                # Log what we found for debugging
+                if not hasattr(self, '_last_supervisorctl_check'):
+                    logger.info(f"supervisorctl check: jupyter={'RUNNING' if jupyter_running else 'NOT RUNNING'}, "
+                              f"python_server={'RUNNING' if python_server_running else 'NOT RUNNING'}, "
+                              f"turn_server={'RUNNING' if turn_server_running else 'NOT RUNNING'}")
+                    self._last_supervisorctl_check = True
+                
                 if not jupyter_running:
                     logger.warning("Jupyter server not running (supervisorctl), attempting restart")
                     subprocess.run(['supervisorctl', '-c', '/etc/supervisor/conf.d/supervisord.conf', 'restart', 'jupyter'], timeout=10, capture_output=True)
@@ -337,19 +421,33 @@ class MonitorService:
                     logger.warning("TURN server not running (supervisorctl), attempting restart")
                     subprocess.run(['supervisorctl', '-c', '/etc/supervisor/conf.d/supervisord.conf', 'restart', 'turn_server'], timeout=10, capture_output=True)
 
+                # If supervisorctl shows RUNNING, trust it even if socket checks might fail
+                # (services might be starting up and not ready to accept connections yet)
                 return jupyter_running and python_server_running and turn_server_running
             else:
-                # supervisorctl failed - log at debug level (not warning) since we have fallback
+                # supervisorctl failed - log at info level first time, then debug
                 error_msg = result.stderr.strip() if result.stderr else "No error message"
                 output_msg = result.stdout.strip() if result.stdout else "No output"
-                logger.debug(f"supervisorctl unavailable (returncode={result.returncode}): {error_msg}. Using fallback checks.")
-                if output_msg:
-                    logger.debug(f"supervisorctl stdout: {output_msg}")
+                if not hasattr(self, '_supervisorctl_failed_logged'):
+                    logger.info(f"supervisorctl unavailable (returncode={result.returncode}): {error_msg}. Using fallback checks.")
+                    if output_msg:
+                        logger.info(f"supervisorctl stdout: {output_msg}")
+                    self._supervisorctl_failed_logged = True
+                else:
+                    logger.debug(f"supervisorctl unavailable (returncode={result.returncode}): {error_msg}. Using fallback checks.")
             
         except subprocess.TimeoutExpired:
-            logger.debug("supervisorctl command timed out, using fallback checks")
+            if not hasattr(self, '_supervisorctl_timeout_logged'):
+                logger.info("supervisorctl command timed out, using fallback checks")
+                self._supervisorctl_timeout_logged = True
+            else:
+                logger.debug("supervisorctl command timed out, using fallback checks")
         except Exception as e:
-            logger.debug(f"supervisorctl error: {e}, using fallback checks")
+            if not hasattr(self, '_supervisorctl_error_logged'):
+                logger.info(f"supervisorctl error: {e}, using fallback checks")
+                self._supervisorctl_error_logged = True
+            else:
+                logger.debug(f"supervisorctl error: {e}, using fallback checks")
         
         # Fallback: Use socket checks (most reliable) and process checks
         return self._check_processes_via_socket_and_ps()
@@ -410,7 +508,7 @@ class MonitorService:
                 logger.debug(f"Error checking processes via psutil: {e}, but socket check passed")
                 return socket_check_passed  # Trust socket check
         else:
-            # Socket check failed - services might not be running
+            # Socket check failed - services might not be running, or might be starting up
             # Check processes to see if they exist but aren't listening yet
             try:
                 import psutil
@@ -445,14 +543,24 @@ class MonitorService:
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         continue
                 
-                if not jupyter_found:
-                    logger.warning("Jupyter server not running: process not found and port 8888 not accepting connections")
-                if not python_found:
-                    logger.warning("Python server not running: process not found and port 8765 not accepting connections")
-                if not turn_found and self.start_turn:
-                    logger.warning("TURN server not running: process not found")
-                
-                return False
+                # If processes are found but sockets aren't ready, they might be starting up
+                # Trust that processes are running if found (give them time to start listening)
+                if jupyter_found and python_found and turn_found:
+                    # Processes exist - trust they're running even if sockets not ready yet
+                    if not hasattr(self, '_processes_found_but_sockets_not_ready'):
+                        logger.info("Processes found (jupyter, python_server, turn_server) but sockets not ready yet - services may be starting up")
+                        self._processes_found_but_sockets_not_ready = True
+                    return True  # Trust process existence
+                else:
+                    # Processes not found - services are definitely not running
+                    if not jupyter_found:
+                        logger.warning("Jupyter server not running: process not found and port 8888 not accepting connections")
+                    if not python_found:
+                        logger.warning("Python server not running: process not found and port 8765 not accepting connections")
+                    if not turn_found and self.start_turn:
+                        logger.warning("TURN server not running: process not found")
+                    
+                    return False
                 
             except Exception as e:
                 logger.error(f"Error checking processes via psutil: {e}")
@@ -613,7 +721,16 @@ class MonitorService:
                 # If session is still provisioning, check if services are ready
                 if not self.session_started:
                     services_ready = self._check_services_ready()
-                    if services_ready:
+                    
+                    # If supervisorctl shows processes as RUNNING, trust that even if socket checks fail
+                    # (services might be starting up and not ready to accept connections yet)
+                    if process_health_ok and not services_ready:
+                        # Processes are running but sockets not ready - give them more time
+                        if not hasattr(self, '_services_starting_logged'):
+                            logger.info("Services are running (supervisorctl) but not yet accepting connections - waiting for them to fully start")
+                            self._services_starting_logged = True
+                        # Don't mark as started yet, but also don't log warning
+                    elif services_ready:
                         await self._mark_session_started()
                     elif not process_health_ok:
                         # Services not ready and process health check failed
