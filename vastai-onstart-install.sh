@@ -354,6 +354,10 @@ mkdir -p /var/log/supervisor /app/logs /tmp/tensordock-logs
 mkdir -p /var/run
 chmod 1777 /var/run
 
+# Set initial permissions for log directories (will be refined after user creation)
+# Make them world-writable initially so they work regardless of user
+chmod 777 /tmp/tensordock-logs /app/logs 2>/dev/null || true
+
 # Set up directories for non-root users
 export XDG_DATA_HOME="/tmp/.local/share"
 export XDG_CONFIG_HOME="/tmp/.config"
@@ -368,23 +372,58 @@ mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" \
 
 # Set proper ownership and permissions for appuser
 # These directories need to be writable by appuser for Jupyter and Python services
-log "Setting ownership and permissions for Jupyter directories..."
+log "Setting ownership and permissions for Jupyter and log directories..."
 # Ensure appuser exists before setting ownership
 if id appuser >/dev/null 2>&1; then
+    # Set ownership for all directories that appuser needs to write to
     if chown -R appuser:appuser "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" \
-                                "$JUPYTER_RUNTIME_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_CONFIG_DIR"; then
-        log "Successfully set ownership to appuser for Jupyter directories"
+                                "$JUPYTER_RUNTIME_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_CONFIG_DIR" \
+                                "$TD_LOG_DIR" "/app/logs" 2>/dev/null; then
+        log "Successfully set ownership to appuser for all directories"
         chmod -R 755 "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" \
-                     "$JUPYTER_RUNTIME_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_CONFIG_DIR"
+                     "$JUPYTER_RUNTIME_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_CONFIG_DIR" \
+                     "$TD_LOG_DIR" "/app/logs" 2>/dev/null || true
     else
-        log "ERROR: Failed to set ownership to appuser, using more permissive permissions..."
+        log "WARNING: Failed to set ownership to appuser, using more permissive permissions..."
         chmod -R 777 "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" \
-                     "$JUPYTER_RUNTIME_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_CONFIG_DIR"
+                     "$JUPYTER_RUNTIME_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_CONFIG_DIR" \
+                     "$TD_LOG_DIR" "/app/logs" 2>/dev/null || true
+        # Try chown again after setting permissions
+        chown -R appuser:appuser "$TD_LOG_DIR" "/app/logs" 2>/dev/null || true
     fi
 else
     log "WARNING: appuser does not exist yet, setting world-writable permissions..."
     chmod -R 777 "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" \
-                 "$JUPYTER_RUNTIME_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_CONFIG_DIR"
+                 "$JUPYTER_RUNTIME_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_CONFIG_DIR" \
+                 "$TD_LOG_DIR" "/app/logs" 2>/dev/null || true
+fi
+
+# Verify log directories are writable and fix if needed
+log "Verifying log directory permissions..."
+if [ -d "$TD_LOG_DIR" ]; then
+    # Check if directory is writable by current user (root)
+    if [ ! -w "$TD_LOG_DIR" ]; then
+        log "Fixing permissions for log directory $TD_LOG_DIR..."
+        chmod 777 "$TD_LOG_DIR" 2>/dev/null || true
+    fi
+    # Ensure appuser owns it if appuser exists
+    if id appuser >/dev/null 2>&1; then
+        chown appuser:appuser "$TD_LOG_DIR" 2>/dev/null || {
+            log "WARNING: Could not set ownership, ensuring world-writable..."
+            chmod 777 "$TD_LOG_DIR" 2>/dev/null || true
+        }
+    fi
+    log "Log directory $TD_LOG_DIR permissions verified"
+fi
+
+# Same for /app/logs
+if [ -d "/app/logs" ]; then
+    chmod 755 "/app/logs" 2>/dev/null || true
+    if id appuser >/dev/null 2>&1; then
+        chown appuser:appuser "/app/logs" 2>/dev/null || {
+            chmod 777 "/app/logs" 2>/dev/null || true
+        }
+    fi
 fi
 
 # Detect Python and Jupyter paths

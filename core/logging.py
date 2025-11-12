@@ -24,12 +24,23 @@ def _resolve_log_dir() -> str:
             continue
         try:
             os.makedirs(directory, exist_ok=True)
-            return directory
-        except OSError:
+            # Verify directory is writable
+            if os.access(directory, os.W_OK):
+                return directory
+        except (OSError, PermissionError):
             continue
 
     # Last resort: current working directory (may still fail but nothing else left)
-    return os.getcwd()
+    try:
+        cwd = os.getcwd()
+        os.makedirs(cwd, exist_ok=True)
+        if os.access(cwd, os.W_OK):
+            return cwd
+    except:
+        pass
+    
+    # If all else fails, return the first candidate anyway (may fail later)
+    return candidates[0] if candidates else os.getcwd()
 
 
 def setup_logging(level: str = "INFO", log_file: str = "tensordock_server.log") -> logging.Logger:
@@ -37,19 +48,29 @@ def setup_logging(level: str = "INFO", log_file: str = "tensordock_server.log") 
     log_dir = _resolve_log_dir()
     log_path = os.path.join(log_dir, log_file)
 
-    # Configure logging to write to both file and console
+    # Configure logging handlers - handle permission errors gracefully
+    handlers = [logging.StreamHandler()]  # Always include console output
+    
+    try:
+        # Try to add file handler, but don't fail if we can't write
+        file_handler = logging.FileHandler(log_path, mode='a', encoding='utf-8')
+        handlers.append(file_handler)
+    except (OSError, PermissionError) as e:
+        # If we can't write to the log file, just use console
+        import sys
+        print(f"WARNING: Cannot write to log file {log_path}: {e}", file=sys.stderr)
+        print(f"Logging to console only", file=sys.stderr)
+
+    # Configure logging to write to both file and console (or console only if file fails)
     logging.basicConfig(
         level=getattr(logging, level.upper()),
         format='%(asctime)s [%(levelname)s] %(message)s',
         datefmt='%H:%M:%S',
-        handlers=[
-            logging.FileHandler(log_path, mode='a', encoding='utf-8'),
-            logging.StreamHandler()  # Console output
-        ]
+        handlers=handlers
     )
 
     logger = logging.getLogger("tensordock")
-    logger.info(f"Logging initialized - output will be written to: {log_path}")
+    logger.info(f"Logging initialized - output will be written to: {log_path if len(handlers) > 1 else 'console only'}")
 
     return logger
 
