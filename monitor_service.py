@@ -155,51 +155,80 @@ class MonitorService:
     def _check_services_ready(self) -> bool:
         """Check if Jupyter (port 8888) and Python server (port 8765) are accepting connections"""
         try:
-            # Check Jupyter on port 8888 - try both localhost and 127.0.0.1
+            # Check Jupyter on port 8888 - use HTTP request to API endpoint (more reliable)
             jupyter_ready = False
             jupyter_error = None
             for host in ['127.0.0.1', 'localhost']:
                 try:
-                    jupyter_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    jupyter_socket.settimeout(2)
-                    jupyter_result = jupyter_socket.connect_ex((host, 8888))
-                    jupyter_socket.close()
-                    if jupyter_result == 0:
+                    # Try HTTP request to Jupyter API (more reliable than socket)
+                    jupyter_token = os.getenv('JUPYTER_TOKEN', '')
+                    api_url = f"http://{host}:8888/api"
+                    headers = {}
+                    if jupyter_token:
+                        headers['Authorization'] = f'Token {jupyter_token}'
+                    
+                    response = requests.get(api_url, headers=headers, timeout=3)
+                    if response.status_code in [200, 401, 403]:  # 401/403 means server is up but auth failed
                         jupyter_ready = True
                         break
-                    else:
-                        jupyter_error = f"Connection failed with error code {jupyter_result}"
+                except requests.exceptions.ConnectionError:
+                    # Try socket connection as fallback
+                    try:
+                        jupyter_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        jupyter_socket.settimeout(2)
+                        jupyter_result = jupyter_socket.connect_ex((host, 8888))
+                        jupyter_socket.close()
+                        if jupyter_result == 0:
+                            jupyter_ready = True
+                            break
+                        else:
+                            jupyter_error = f"Connection failed with error code {jupyter_result}"
+                    except Exception as e:
+                        jupyter_error = str(e)
+                        logger.debug(f"Error connecting to Jupyter on {host}:8888: {e}")
                 except Exception as e:
                     jupyter_error = str(e)
-                    logger.debug(f"Error connecting to Jupyter on {host}:8888: {e}")
+                    logger.debug(f"Error checking Jupyter on {host}:8888: {e}")
                     continue
             
-            # Check Python server on port 8765 - try both localhost and 127.0.0.1
+            # Check Python server on port 8765 - use HTTP request to /status endpoint (more reliable)
             python_ready = False
             python_error = None
             for host in ['127.0.0.1', 'localhost']:
                 try:
-                    python_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    python_socket.settimeout(2)
-                    python_result = python_socket.connect_ex((host, 8765))
-                    python_socket.close()
-                    if python_result == 0:
+                    # Try HTTP request to /status endpoint (more reliable than socket)
+                    status_url = f"http://{host}:8765/status"
+                    response = requests.get(status_url, timeout=3)
+                    if response.status_code == 200:
                         python_ready = True
                         break
-                    else:
-                        python_error = f"Connection failed with error code {python_result}"
+                except requests.exceptions.ConnectionError:
+                    # Try socket connection as fallback
+                    try:
+                        python_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        python_socket.settimeout(2)
+                        python_result = python_socket.connect_ex((host, 8765))
+                        python_socket.close()
+                        if python_result == 0:
+                            python_ready = True
+                            break
+                        else:
+                            python_error = f"Connection failed with error code {python_result}"
+                    except Exception as e:
+                        python_error = str(e)
+                        logger.debug(f"Error connecting to Python server on {host}:8765: {e}")
                 except Exception as e:
                     python_error = str(e)
-                    logger.debug(f"Error connecting to Python server on {host}:8765: {e}")
+                    logger.debug(f"Error checking Python server on {host}:8765: {e}")
                     continue
             
-            # If socket checks fail, try checking if ports are listening using ss/netstat
+            # If HTTP checks fail, try checking if ports are listening using ss/netstat
             if not jupyter_ready:
                 port_listening = self._check_port_listening(8888)
                 if port_listening:
-                    # Port is listening but not accepting connections - might be starting up
+                    # Port is listening but HTTP requests failing - might be starting up or auth issue
                     if not hasattr(self, '_jupyter_port_listening_logged'):
-                        logger.info("Jupyter port 8888 is listening but not accepting connections yet (service may be starting)")
+                        logger.info("Jupyter port 8888 is listening but HTTP requests failing (service may be starting or auth issue)")
                         self._jupyter_port_listening_logged = True
                 else:
                     # Log first time we detect port not listening
@@ -212,9 +241,9 @@ class MonitorService:
             if not python_ready:
                 port_listening = self._check_port_listening(8765)
                 if port_listening:
-                    # Port is listening but not accepting connections - might be starting up
+                    # Port is listening but HTTP /status endpoint not responding - server may still be initializing
                     if not hasattr(self, '_python_port_listening_logged'):
-                        logger.info("Python server port 8765 is listening but not accepting connections yet (service may be starting)")
+                        logger.info("Python server port 8765 is listening but /status endpoint not responding (server may still be initializing)")
                         self._python_port_listening_logged = True
                 else:
                     # Log first time we detect port not listening
