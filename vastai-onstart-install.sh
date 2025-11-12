@@ -342,6 +342,27 @@ export TD_LOG_DIR="/tmp/tensordock-logs"
 mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" \
          "$JUPYTER_RUNTIME_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_CONFIG_DIR"
 
+# Set proper ownership and permissions for appuser
+# These directories need to be writable by appuser for Jupyter and Python services
+log "Setting ownership and permissions for Jupyter directories..."
+# Ensure appuser exists before setting ownership
+if id appuser >/dev/null 2>&1; then
+    if chown -R appuser:appuser "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" \
+                                "$JUPYTER_RUNTIME_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_CONFIG_DIR"; then
+        log "Successfully set ownership to appuser for Jupyter directories"
+        chmod -R 755 "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" \
+                     "$JUPYTER_RUNTIME_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_CONFIG_DIR"
+    else
+        log "ERROR: Failed to set ownership to appuser, using more permissive permissions..."
+        chmod -R 777 "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" \
+                     "$JUPYTER_RUNTIME_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_CONFIG_DIR"
+    fi
+else
+    log "WARNING: appuser does not exist yet, setting world-writable permissions..."
+    chmod -R 777 "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" \
+                 "$JUPYTER_RUNTIME_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_CONFIG_DIR"
+fi
+
 # Copy supervisord.conf
 log "Setting up supervisord configuration..."
 SUPERVISORD_CONF=""
