@@ -625,11 +625,11 @@ class MonitorService:
         """Update session document with ports and public IP from environment variables"""
         try:
             # Read VastAI identity port mappings from environment
-            # Identity ports (70000+) map to random external ports where internal = external
-            # VAST_TCP_PORT_70000 → Python server (internal: 8765)
-            # VAST_UDP_PORT_70001 → TURN server (internal: 3478)
-            # VAST_TCP_PORT_70002 → Jupyter (internal: 8888)
-            # VAST_TCP_PORT_22 → SSH (internal: 22)
+            # IMPORTANT: VastAI uses identity port mapping - the port you bind to internally is the same as the external port
+            # VAST_TCP_PORT_70000 → Python server (internal = external, e.g., 27804 = 27804)
+            # VAST_UDP_PORT_70001 → TURN server (internal = external, e.g., 27126 = 27126)
+            # VAST_TCP_PORT_70002 → Jupyter (internal = external, e.g., 27374 = 27374)
+            # VAST_TCP_PORT_22 → SSH (internal = external)
             vast_tcp_port_70000 = os.getenv('VAST_TCP_PORT_70000')  # Python server
             vast_udp_port_70001 = os.getenv('VAST_UDP_PORT_70001')  # TURN server
             vast_tcp_port_70002 = os.getenv('VAST_TCP_PORT_70002')  # Jupyter
@@ -659,56 +659,57 @@ class MonitorService:
                     public_ip = None
             
             # Build ports array with objects containing label, internal, external, and protocol
-            # Format: [{"label": "python", "internal": 8765, "external": 63562, "protocol": "tcp"}, ...]
+            # IMPORTANT: VastAI uses identity port mapping - internal and external ports are the same
+            # Format: [{"label": "python", "internal": 27804, "external": 27804, "protocol": "tcp"}, ...]
             ports = []
             
-            # Python server: 70000 → 8765
+            # Python server: VAST_TCP_PORT_70000 is the identity port (internal = external)
             if vast_tcp_port_70000:
                 try:
-                    external_port = int(vast_tcp_port_70000)
+                    port = int(vast_tcp_port_70000)
                     ports.append({
                         "label": "python",
-                        "internal": 8765,
-                        "external": external_port,
+                        "internal": port,  # Identity mapping: internal = external
+                        "external": port,
                         "protocol": "tcp"
                     })
                 except ValueError:
                     logger.warning(f"Invalid VAST_TCP_PORT_70000: {vast_tcp_port_70000}")
             
-            # TURN server: 70001 → 3478
+            # TURN server: VAST_UDP_PORT_70001 is the identity port (internal = external)
             if vast_udp_port_70001:
                 try:
-                    external_port = int(vast_udp_port_70001)
+                    port = int(vast_udp_port_70001)
                     ports.append({
                         "label": "turn",
-                        "internal": 3478,
-                        "external": external_port,
+                        "internal": port,  # Identity mapping: internal = external
+                        "external": port,
                         "protocol": "udp"
                     })
                 except ValueError:
                     logger.warning(f"Invalid VAST_UDP_PORT_70001: {vast_udp_port_70001}")
             
-            # Jupyter: 70002 → 8888
+            # Jupyter: VAST_TCP_PORT_70002 is the identity port (internal = external)
             if vast_tcp_port_70002:
                 try:
-                    external_port = int(vast_tcp_port_70002)
+                    port = int(vast_tcp_port_70002)
                     ports.append({
                         "label": "jupyter",
-                        "internal": 8888,
-                        "external": external_port,
+                        "internal": port,  # Identity mapping: internal = external
+                        "external": port,
                         "protocol": "tcp"
                     })
                 except ValueError:
                     logger.warning(f"Invalid VAST_TCP_PORT_70002: {vast_tcp_port_70002}")
             
-            # SSH: 22 → 22
+            # SSH: VAST_TCP_PORT_22 is the identity port (internal = external)
             if vast_tcp_port_22:
                 try:
-                    external_port = int(vast_tcp_port_22)
+                    port = int(vast_tcp_port_22)
                     ports.append({
                         "label": "ssh",
-                        "internal": 22,
-                        "external": external_port,
+                        "internal": port,  # Identity mapping: internal = external
+                        "external": port,
                         "protocol": "tcp"
                     })
                 except ValueError:
