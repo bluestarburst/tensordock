@@ -287,6 +287,18 @@ class WebSocketBridge(LoggerMixin):
         finally:
             await self._close_backend_ws(ws_url)
 
+    def get_status(self) -> Dict[str, Any]:
+        """Get WebSocket bridge status."""
+        total_subscribers = sum(len(subs) for subs in self._url_to_subscribers.values())
+        return {
+            'active_websockets': len(self._url_to_ws),
+            'total_subscribers': total_subscribers,
+            'urls_with_connections': len(self._url_to_subscribers),
+            'active_tasks': len([t for t in self._url_to_task.values() if t and not t.done()]),
+            'broadcast_callback_set': self.broadcast_callback is not None,
+            'send_to_client_set': self.send_to_client is not None
+        }
+    
     async def cleanup(self):
         """Cleanup all backend websockets and internal maps for graceful shutdown."""
         debug_log("🧹 [WebSocketBridge] cleanup() called")
@@ -309,3 +321,4 @@ class WebSocketBridge(LoggerMixin):
                     pass
         self._url_to_task.clear()
         debug_log("✅ [WebSocketBridge] cleanup() completed")
+    

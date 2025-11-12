@@ -249,6 +249,22 @@ class HTTPProxyService(LoggerMixin):
             raise
     
     
+    def get_status(self) -> Dict[str, Any]:
+        """Get HTTP proxy service status."""
+        uptime = datetime.datetime.now() - self.request_stats['start_time']
+        total = self.request_stats['total_requests']
+        success_rate = (self.request_stats['successful_requests'] / max(total, 1)) * 100
+        
+        return {
+            'total_requests': total,
+            'successful_requests': self.request_stats['successful_requests'],
+            'failed_requests': self.request_stats['failed_requests'],
+            'success_rate': success_rate,
+            'requests_by_method': dict(self.request_stats['requests_by_method']),
+            'uptime_seconds': uptime.total_seconds(),
+            'base_url': self.base_url
+        }
+    
     async def cleanup(self):
         """Clean up HTTP proxy service resources."""
         debug_log(f"🧹 [HTTPProxy] Cleaning up HTTP proxy service")

@@ -312,3 +312,12 @@ class WebRTCPeerManager(LoggerMixin):
     def send_message(self, client_id: int, message: Dict[str, Any]) -> bool:
         """Send a message to a specific client."""
         return self.data_channel_manager.send_message(client_id, message)
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get WebRTC peer manager status."""
+        return {
+            'peer_connections': len(self.peer_connections),
+            'connected_clients': len(self.get_connected_clients()),
+            'message_handlers': len(self.message_handlers),
+            'data_channels_ready': self.data_channel_manager.get_connected_clients_count() if hasattr(self.data_channel_manager, 'get_connected_clients_count') else len(self.get_connected_clients())
+        }
