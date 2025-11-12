@@ -153,8 +153,11 @@ class MonitorService:
             return False
 
     def _check_services_ready(self) -> bool:
-        """Check if Jupyter (port 8888) and Python server (port 8765) are accepting connections"""
+        """Check if Jupyter (port 8888) and Python server (VAST_TCP_PORT_70000 or 8765) are accepting connections"""
         try:
+            # Get Python server port from environment variable (VastAI maps internal 8765 to external port)
+            python_port = int(os.getenv('VAST_TCP_PORT_70000', '8765'))
+            
             # Check Jupyter on port 8888 - use HTTP request to API endpoint (more reliable)
             jupyter_ready = False
             jupyter_error = None
@@ -191,13 +194,13 @@ class MonitorService:
                     logger.debug(f"Error checking Jupyter on {host}:8888: {e}")
                     continue
             
-            # Check Python server on port 8765 - use HTTP request to /status endpoint (more reliable)
+            # Check Python server on the actual port (VAST_TCP_PORT_70000 or 8765) - use HTTP request to /status endpoint (more reliable)
             python_ready = False
             python_error = None
             for host in ['127.0.0.1', 'localhost']:
                 try:
                     # Try HTTP request to /status endpoint (more reliable than socket)
-                    status_url = f"http://{host}:8765/status"
+                    status_url = f"http://{host}:{python_port}/status"
                     response = requests.get(status_url, timeout=3)
                     if response.status_code == 200:
                         python_ready = True
@@ -207,7 +210,7 @@ class MonitorService:
                     try:
                         python_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         python_socket.settimeout(2)
-                        python_result = python_socket.connect_ex((host, 8765))
+                        python_result = python_socket.connect_ex((host, python_port))
                         python_socket.close()
                         if python_result == 0:
                             python_ready = True
@@ -216,10 +219,10 @@ class MonitorService:
                             python_error = f"Connection failed with error code {python_result}"
                     except Exception as e:
                         python_error = str(e)
-                        logger.debug(f"Error connecting to Python server on {host}:8765: {e}")
+                        logger.debug(f"Error connecting to Python server on {host}:{python_port}: {e}")
                 except Exception as e:
                     python_error = str(e)
-                    logger.debug(f"Error checking Python server on {host}:8765: {e}")
+                    logger.debug(f"Error checking Python server on {host}:{python_port}: {e}")
                     continue
             
             # If HTTP checks fail, try checking if ports are listening using ss/netstat
@@ -239,19 +242,19 @@ class MonitorService:
                         logger.debug(f"Jupyter port 8888 not listening: {jupyter_error or 'connection refused'}")
             
             if not python_ready:
-                port_listening = self._check_port_listening(8765)
+                port_listening = self._check_port_listening(python_port)
                 if port_listening:
                     # Port is listening but HTTP /status endpoint not responding - server may still be initializing
                     if not hasattr(self, '_python_port_listening_logged'):
-                        logger.info("Python server port 8765 is listening but /status endpoint not responding (server may still be initializing)")
+                        logger.info(f"Python server port {python_port} is listening but /status endpoint not responding (server may still be initializing)")
                         self._python_port_listening_logged = True
                 else:
                     # Log first time we detect port not listening
                     if not hasattr(self, '_python_port_not_listening_logged'):
-                        logger.info(f"Python server port 8765 not listening: {python_error or 'connection refused'}")
+                        logger.info(f"Python server port {python_port} not listening: {python_error or 'connection refused'}")
                         self._python_port_not_listening_logged = True
                     else:
-                        logger.debug(f"Python server port 8765 not listening: {python_error or 'connection refused'}")
+                        logger.debug(f"Python server port {python_port} not listening: {python_error or 'connection refused'}")
             
             # Check TURN server process if it's supposed to start
             turn_ready = self._check_turn_server_process()
@@ -585,7 +588,8 @@ class MonitorService:
                     if not jupyter_found:
                         logger.warning("Jupyter server not running: process not found and port 8888 not accepting connections")
                     if not python_found:
-                        logger.warning("Python server not running: process not found and port 8765 not accepting connections")
+                        python_port = int(os.getenv('VAST_TCP_PORT_70000', '8765'))
+                        logger.warning(f"Python server not running: process not found and port {python_port} not accepting connections")
                     if not turn_found and self.start_turn:
                         logger.warning("TURN server not running: process not found")
                     
