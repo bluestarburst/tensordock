@@ -321,12 +321,28 @@ apt-get install -y --no-install-recommends \
 # Install Python dependencies
 log "Installing Python dependencies..."
 if [ -f "/app/requirements.txt" ]; then
-    # Use --break-system-packages for Python 3.12+ to handle system-installed packages
-    # and --ignore-installed to avoid conflicts with system packages
-    pip install --no-cache-dir --break-system-packages --ignore-installed -r /app/requirements.txt || {
-        log "ERROR: Failed to install Python dependencies"
-        exit 1
-    }
+    # Detect Python version to determine which flags to use
+    PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}' | cut -d. -f1,2)
+    PYTHON_MAJOR=$(echo "$PYTHON_VERSION" | cut -d. -f1)
+    PYTHON_MINOR=$(echo "$PYTHON_VERSION" | cut -d. -f2)
+    
+    log "Detected Python version: $PYTHON_VERSION"
+    
+    # --break-system-packages is only available in Python 3.12+
+    # For older versions, use --ignore-installed only
+    if [ "$PYTHON_MAJOR" -gt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -ge 12 ]); then
+        log "Python 3.12+ detected, using --break-system-packages flag"
+        pip install --no-cache-dir --break-system-packages --ignore-installed -r /app/requirements.txt || {
+            log "ERROR: Failed to install Python dependencies"
+            exit 1
+        }
+    else
+        log "Python < 3.12 detected, using --ignore-installed flag only"
+        pip install --no-cache-dir --ignore-installed -r /app/requirements.txt || {
+            log "ERROR: Failed to install Python dependencies"
+            exit 1
+        }
+    fi
     log "Python dependencies installed successfully"
 else
     log "WARNING: requirements.txt not found, skipping Python dependency installation"
