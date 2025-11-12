@@ -18,6 +18,11 @@ class SignalingManager(LoggerMixin):
         super().__init__()
         self.pending_offers: Dict[str, Dict[str, Any]] = {}
     
+    @property
+    def offers(self) -> Dict[str, Dict[str, Any]]:
+        """Get pending offers (alias for pending_offers for backward compatibility)."""
+        return self.pending_offers
+    
     def create_offer_id(self, offer: Dict[str, Any]) -> str:
         """Create a unique ID for an offer."""
         return f"offer_{id(offer)}"
