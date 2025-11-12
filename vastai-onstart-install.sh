@@ -24,11 +24,19 @@ df -h / | tail -1
 log "======================================"
 
 # Export VAST_* environment variables (set by VastAI)
+# These are automatically set by Vast AI when ports are exposed via -p flags
 log "Exporting VastAI port environment variables..."
 for var in $(env | grep -E '^VAST_' | cut -d= -f1); do
     export "$var"
-    log "  Exported: $var"
+    log "  Exported: $var=${!var}"
 done
+
+# Persist VAST_* and other important environment variables to /etc/environment
+# This makes them available in SSH and Jupyter sessions
+log "Persisting environment variables to /etc/environment..."
+env | grep -E '^(VAST_|USER_ID|INSTANCE_ID|RESOURCE_TYPE|MONITOR_API_KEY|FIREBASE_FUNCTIONS_URL|START_TURN|JUPYTER_TOKEN|TURN_USERNAME|TURN_PASSWORD|PUBLIC_IPADDR|GITHUB_REPO|GITHUB_BRANCH)=' >> /etc/environment || {
+    log "WARNING: Failed to write to /etc/environment (non-critical)"
+}
 
 # Set environment variables
 export DEBIAN_FRONTEND=noninteractive
