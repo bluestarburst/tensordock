@@ -371,6 +371,51 @@ else
                  "$JUPYTER_RUNTIME_DIR" "$JUPYTER_DATA_DIR" "$JUPYTER_CONFIG_DIR"
 fi
 
+# Detect Python and Jupyter paths
+log "Detecting Python and Jupyter paths..."
+PYTHON3_PATH=""
+JUPYTER_PATH=""
+
+# Try common Python3 paths
+for path in /usr/bin/python3 /usr/local/bin/python3 /usr/bin/python /usr/local/bin/python; do
+    if [ -f "$path" ] && "$path" --version >/dev/null 2>&1; then
+        PYTHON3_PATH="$path"
+        log "Found Python3 at: $PYTHON3_PATH"
+        break
+    fi
+done
+
+# Try common Jupyter paths
+for path in /usr/local/bin/jupyter /usr/bin/jupyter "$(which jupyter 2>/dev/null)"; do
+    if [ -n "$path" ] && [ -f "$path" ] && "$path" --version >/dev/null 2>&1; then
+        JUPYTER_PATH="$path"
+        log "Found Jupyter at: $JUPYTER_PATH"
+        break
+    fi
+done
+
+# Fallback: use python3 from PATH if available
+if [ -z "$PYTHON3_PATH" ]; then
+    if command -v python3 >/dev/null 2>&1; then
+        PYTHON3_PATH=$(which python3)
+        log "Found Python3 via PATH: $PYTHON3_PATH"
+    else
+        log "ERROR: Could not find Python3"
+        exit 1
+    fi
+fi
+
+# Fallback: use jupyter from PATH if available
+if [ -z "$JUPYTER_PATH" ]; then
+    if command -v jupyter >/dev/null 2>&1; then
+        JUPYTER_PATH=$(which jupyter)
+        log "Found Jupyter via PATH: $JUPYTER_PATH"
+    else
+        log "WARNING: Could not find Jupyter, will use /usr/local/bin/jupyter as fallback"
+        JUPYTER_PATH="/usr/local/bin/jupyter"
+    fi
+fi
+
 # Copy supervisord.conf
 log "Setting up supervisord configuration..."
 SUPERVISORD_CONF=""
@@ -393,10 +438,29 @@ fi
 
 if [ -n "$SUPERVISORD_CONF" ]; then
     mkdir -p /etc/supervisor/conf.d
-    cp "$SUPERVISORD_CONF" /etc/supervisor/conf.d/supervisord.conf
+    # Create a temporary copy to modify
+    TMP_CONF="/tmp/supervisord.conf.tmp"
+    cp "$SUPERVISORD_CONF" "$TMP_CONF"
+    
+    # Update Python paths in the config file
+    log "Updating Python paths in supervisord.conf..."
+    sed -i "s|/usr/local/bin/python|$PYTHON3_PATH|g" "$TMP_CONF"
+    sed -i "s|/usr/bin/python3|$PYTHON3_PATH|g" "$TMP_CONF"
+    
+    # Update Jupyter path if found
+    if [ -n "$JUPYTER_PATH" ] && [ "$JUPYTER_PATH" != "/usr/local/bin/jupyter" ]; then
+        log "Updating Jupyter path in supervisord.conf..."
+        sed -i "s|/usr/local/bin/jupyter|$JUPYTER_PATH|g" "$TMP_CONF"
+    fi
+    
+    # Copy the modified config to final location
+    cp "$TMP_CONF" /etc/supervisor/conf.d/supervisord.conf
+    rm -f "$TMP_CONF"
     chown root:root /etc/supervisor/conf.d/supervisord.conf
     chmod 644 /etc/supervisor/conf.d/supervisord.conf
-    log "Supervisord configuration copied from $SUPERVISORD_CONF"
+    log "Supervisord configuration copied from $SUPERVISORD_CONF with updated paths"
+    log "  Python: $PYTHON3_PATH"
+    log "  Jupyter: $JUPYTER_PATH"
 fi
 
 # Set proper file ownership and permissions
