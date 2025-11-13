@@ -210,6 +210,10 @@ if [ -z "$TURN_PASSWORD" ]; then
   TURN_PASSWORD=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)
 fi
 
+# Create runtime.env file with all environment variables
+# Note: VAST_* port variables are used by monitor_service.py to update Firebase session ports
+# For DigitalOcean, ports use identity mapping (internal = external) since there's no port forwarding
+# The monitor service will read these and report: internal=8765, external=8765 (for example)
 cat <<ENVFILE >/opt/tensordock/runtime.env
 USER_ID="$USER_ID"
 INSTANCE_ID="$INSTANCE_ID"
@@ -325,13 +329,37 @@ if ! systemctl is-active --quiet tensordock-supervisor.service; then
 fi
 
 if command -v ufw >/dev/null 2>&1; then
-  echo "Configuring firewall rules..."
-  # Use non-interactive mode and timeout to prevent hanging
-  ufw --force allow $PYTHON_PORT/tcp 2>&1 || true
-  ufw --force allow $JUPYTER_PORT/tcp 2>&1 || true
-  ufw --force allow $TURN_PORT/udp 2>&1 || true
-  # Enable firewall with timeout to prevent interactive prompts
-  echo "y" | ufw --force enable 2>&1 || true
+  echo "Configuring firewall rules to expose ports..."
+  # Allow SSH first to prevent lockout (should already be allowed, but be safe)
+  ufw --force allow 22/tcp 2>&1 || true
+  
+  # Allow application ports
+  # For DigitalOcean, these are the actual external ports (identity mapping)
+  # Python server port
+  ufw --force allow $PYTHON_PORT/tcp 2>&1 || {
+    echo "WARNING: Failed to allow Python port $PYTHON_PORT/tcp"
+  }
+  
+  # Jupyter port
+  ufw --force allow $JUPYTER_PORT/tcp 2>&1 || {
+    echo "WARNING: Failed to allow Jupyter port $JUPYTER_PORT/tcp"
+  }
+  
+  # TURN server port (UDP)
+  ufw --force allow $TURN_PORT/udp 2>&1 || {
+    echo "WARNING: Failed to allow TURN port $TURN_PORT/udp"
+  }
+  
+  # Enable firewall (non-interactive)
+  echo "y" | ufw --force enable 2>&1 || {
+    echo "WARNING: Failed to enable ufw"
+  }
+  
+  # Verify firewall rules
+  echo "Firewall rules configured:"
+  ufw status numbered 2>&1 | grep -E "($PYTHON_PORT|$JUPYTER_PORT|$TURN_PORT|22)" || true
+else
+  echo "WARNING: ufw not found, ports may not be exposed. Consider configuring DigitalOcean Cloud Firewall via API."
 fi
 
 echo "=== TensorDock VM Setup Completed at $(date) ==="
