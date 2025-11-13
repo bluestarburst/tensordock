@@ -280,95 +280,8 @@ else
   echo "WARNING: watcher group does not exist, skipping chown of runtime.env"
 fi
 
-# Export environment variables for supervisord validation
-# These are needed because supervisord.conf references them via %(ENV_VAR_NAME)s
-export VAST_TCP_PORT_70000="${VAST_TCP_PORT_70000:-$PYTHON_PORT}"
-export VAST_UDP_PORT_70001="${VAST_UDP_PORT_70001:-$TURN_PORT}"
-export VAST_TCP_PORT_70002="${VAST_TCP_PORT_70002:-$JUPYTER_PORT}"
-
-# Validate supervisord config before starting
-# Note: This validation happens after runtime.env is created and variables are exported
-echo "Validating supervisord configuration..."
-if command -v supervisord >/dev/null 2>&1; then
-  # Source the runtime.env file to ensure all variables are available for validation
-  set -a  # Automatically export all variables
-  source /opt/tensordock/runtime.env 2>/dev/null || true
-  set +a  # Turn off automatic export
-  
-  if ! supervisord -c "$SUPERVISOR_CONF" -t 2>&1; then
-    echo "ERROR: supervisord configuration validation failed"
-    echo "Configuration file contents:"
-    cat "$SUPERVISOR_CONF" | head -50
-    echo ""
-    echo "Environment variables available:"
-    env | grep -E "^(VAST_|TURN_|PUBLIC_IPADDR|JUPYTER_TOKEN|START_TURN)" | sort
-    exit 1
-  fi
-  echo "Supervisord configuration is valid"
-else
-  echo "WARNING: supervisord not found, skipping config validation"
-fi
-
-SUPERVISORD_BIN=$(command -v supervisord || true)
-if [ -z "$SUPERVISORD_BIN" ]; then
-  echo "ERROR: supervisord not found in PATH"
-  exit 1
-fi
-
-cat <<'SERVICE' >/etc/systemd/system/tensordock-supervisor.service
-[Unit]
-Description=TensorDock Supervisor
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-EnvironmentFile=/opt/tensordock/runtime.env
-WorkingDirectory=/opt/tensordock/repo
-ExecStart=@SUPERVISORD_BIN@ -c /etc/supervisor/conf.d/supervisord.conf -n
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-sed -i "s|@SUPERVISORD_BIN@|$SUPERVISORD_BIN|" /etc/systemd/system/tensordock-supervisor.service
-
-echo "Reloading systemd daemon..."
-systemctl daemon-reload || {
-  echo "ERROR: systemctl daemon-reload failed"
-  exit 1
-}
-
-echo "Enabling tensordock-supervisor.service..."
-systemctl enable tensordock-supervisor.service || {
-  echo "WARNING: Failed to enable tensordock-supervisor.service"
-}
-
-echo "Starting tensordock-supervisor.service..."
-# Start the service with a timeout to prevent hanging
-timeout 30 systemctl start tensordock-supervisor.service || {
-  EXIT_CODE=$?
-  if [ $EXIT_CODE -eq 124 ]; then
-    echo "ERROR: systemctl start timed out after 30 seconds"
-  else
-    echo "WARNING: Failed to start tensordock-supervisor.service (exit code: $EXIT_CODE)"
-  fi
-  echo "Checking service status..."
-  systemctl status tensordock-supervisor.service --no-pager -l || true
-  echo "Checking journal logs..."
-  journalctl -u tensordock-supervisor.service --no-pager -n 30 || true
-}
-
-# Give supervisord a moment to start, then verify it's running
-sleep 2
-if ! systemctl is-active --quiet tensordock-supervisor.service; then
-  echo "WARNING: tensordock-supervisor.service is not active"
-  echo "Checking logs..."
-  journalctl -u tensordock-supervisor.service --no-pager -n 20 || true
-fi
-
+# Configure firewall FIRST, before any service validation or startup
+# This ensures ports are open before services try to bind to them
 if command -v ufw >/dev/null 2>&1; then
   echo "Configuring firewall rules to expose ports..."
   
@@ -466,6 +379,109 @@ if command -v ufw >/dev/null 2>&1; then
   }
 else
   echo "WARNING: ufw not found, ports may not be exposed. Consider configuring DigitalOcean Cloud Firewall via API."
+fi
+
+# Export environment variables for supervisord validation
+# These are needed because supervisord.conf references them via %(ENV_VAR_NAME)s
+export VAST_TCP_PORT_70000="${VAST_TCP_PORT_70000:-$PYTHON_PORT}"
+export VAST_UDP_PORT_70001="${VAST_UDP_PORT_70001:-$TURN_PORT}"
+export VAST_TCP_PORT_70002="${VAST_TCP_PORT_70002:-$JUPYTER_PORT}"
+
+# Validate supervisord config before starting
+# Note: This validation happens after runtime.env is created and variables are exported
+echo "Validating supervisord configuration..."
+if command -v supervisord >/dev/null 2>&1; then
+  # Source the runtime.env file to ensure all variables are available for validation
+  set -a  # Automatically export all variables
+  source /opt/tensordock/runtime.env 2>/dev/null || true
+  set +a  # Turn off automatic export
+  
+  # Use timeout to prevent hanging - validation should be quick
+  if ! timeout 10 supervisord -c "$SUPERVISOR_CONF" -t 2>&1; then
+    EXIT_CODE=$?
+    if [ $EXIT_CODE -eq 124 ]; then
+      echo "ERROR: supervisord configuration validation timed out after 10 seconds"
+      echo "This may indicate a problem with the configuration or system resources"
+    else
+      echo "ERROR: supervisord configuration validation failed (exit code: $EXIT_CODE)"
+    fi
+    echo "Configuration file contents:"
+    cat "$SUPERVISOR_CONF" | head -50
+    echo ""
+    echo "Environment variables available:"
+    env | grep -E "^(VAST_|TURN_|PUBLIC_IPADDR|JUPYTER_TOKEN|START_TURN)" | sort
+    exit 1
+  fi
+  echo "✅ Supervisord configuration is valid"
+else
+  echo "WARNING: supervisord not found, skipping config validation"
+fi
+
+# Now start supervisord AFTER firewall is configured
+SUPERVISORD_BIN=$(command -v supervisord || true)
+if [ -z "$SUPERVISORD_BIN" ]; then
+  echo "ERROR: supervisord not found in PATH"
+  exit 1
+fi
+
+cat <<'SERVICE' >/etc/systemd/system/tensordock-supervisor.service
+[Unit]
+Description=TensorDock Supervisor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/tensordock/runtime.env
+WorkingDirectory=/opt/tensordock/repo
+ExecStart=@SUPERVISORD_BIN@ -c /etc/supervisor/conf.d/supervisord.conf -n
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+sed -i "s|@SUPERVISORD_BIN@|$SUPERVISORD_BIN|" /etc/systemd/system/tensordock-supervisor.service
+
+echo "Reloading systemd daemon..."
+systemctl daemon-reload || {
+  echo "ERROR: systemctl daemon-reload failed"
+  exit 1
+}
+
+echo "Enabling tensordock-supervisor.service..."
+systemctl enable tensordock-supervisor.service || {
+  echo "WARNING: Failed to enable tensordock-supervisor.service"
+}
+
+echo "Starting tensordock-supervisor.service..."
+# Start the service - systemctl start should return immediately for Type=simple services
+# Use timeout as a safety net, but it should return immediately
+if timeout 5 systemctl start tensordock-supervisor.service 2>&1; then
+  echo "✅ tensordock-supervisor.service started successfully"
+else
+  EXIT_CODE=$?
+  if [ $EXIT_CODE -eq 124 ]; then
+    echo "WARNING: systemctl start timed out (this shouldn't happen for Type=simple)"
+  else
+    echo "WARNING: systemctl start returned exit code: $EXIT_CODE"
+  fi
+  # Continue anyway - the service might still be starting
+fi
+
+# Give supervisord a moment to start, then verify it's running
+sleep 2
+if systemctl is-active --quiet tensordock-supervisor.service; then
+  echo "✅ tensordock-supervisor.service is active and running"
+else
+  echo "WARNING: tensordock-supervisor.service is not active"
+  echo "Checking service status..."
+  systemctl status tensordock-supervisor.service --no-pager -l 2>&1 | head -20 || true
+  echo "Checking recent journal logs..."
+  journalctl -u tensordock-supervisor.service --no-pager -n 20 2>&1 | head -30 || true
 fi
 
 echo "=== TensorDock VM Setup Completed at $(date) ==="
