@@ -101,10 +101,25 @@ if [ ! -f "$APP_DIR/supervisord.conf" ]; then
 fi
 
 echo "Installing Python dependencies..."
-pip3 install --no-cache-dir -r "$APP_DIR/requirements.txt" || {
-  echo "ERROR: Failed to install Python dependencies"
-  exit 1
-}
+# Use --break-system-packages for Python 3.12+ or --ignore-installed for older versions
+# This prevents conflicts with system-installed packages like pexpect
+PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}' | cut -d. -f1,2)
+PYTHON_MAJOR=$(echo "$PYTHON_VERSION" | cut -d. -f1)
+PYTHON_MINOR=$(echo "$PYTHON_VERSION" | cut -d. -f2)
+
+if [ "$PYTHON_MAJOR" -gt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -ge 12 ]); then
+  echo "Python 3.12+ detected, using --break-system-packages flag"
+  pip3 install --no-cache-dir --break-system-packages -r "$APP_DIR/requirements.txt" || {
+    echo "ERROR: Failed to install Python dependencies"
+    exit 1
+  }
+else
+  echo "Python < 3.12 detected, using --ignore-installed flag"
+  pip3 install --no-cache-dir --ignore-installed -r "$APP_DIR/requirements.txt" || {
+    echo "ERROR: Failed to install Python dependencies"
+    exit 1
+  }
+fi
 
 echo "Creating directories..."
 mkdir -p /var/log/supervisor /tmp/tensordock-logs "$APP_DIR/logs" \
