@@ -530,9 +530,6 @@ chmod 750 /app/monitor_service.py 2>/dev/null || true
 chown -R watcher:watcher /var/log/supervisor 2>/dev/null || true
 chmod 755 /app/start.sh 2>/dev/null || true
 
-# Make diagnostic scripts executable
-chmod +x /app/diagnose-container.sh /app/show-env-vars.sh 2>/dev/null || true
-
 # Set up TURN server environment variables
 log "Setting up TURN server configuration..."
 if [ -z "${TURN_USERNAME:-}" ]; then

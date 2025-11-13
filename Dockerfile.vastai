@@ -169,11 +169,6 @@ COPY tensordock/ /app/
 # Layer 13: Remove control-plane directory if it exists
 RUN rm -rf /app/control-plane
 
-# Layer 14: Copy and set up diagnostic scripts
-COPY tensordock/diagnose-container.sh /app/diagnose-container.sh
-COPY tensordock/show-env-vars.sh /app/show-env-vars.sh
-RUN chmod +x /app/diagnose-container.sh /app/show-env-vars.sh
-
 # Layer 15: Copy supervisor config (will be updated at runtime with env vars)
 COPY tensordock/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
