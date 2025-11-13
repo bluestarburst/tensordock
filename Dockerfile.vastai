@@ -191,7 +191,10 @@ RUN chown watcher:watcher /app/monitor_service.py && \
     chmod 755 /app/start.sh 2>/dev/null || true
 
 # Expose ports
-EXPOSE 22 8888 8765 3478/udp 49152-65535/udp
+# Note: Only expose specific ports needed. The broad UDP range (49152-65535) was removed
+# because it causes VastAI to map all UDP ports, preventing identity port mapping for 70001.
+# The identity port mapping (-p 70001:70001/udp) will work via the -p flag in env field.
+EXPOSE 22 8888 8765 3478/udp
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

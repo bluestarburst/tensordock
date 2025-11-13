@@ -133,7 +133,7 @@ fi
 # Supervisord requires these variables to exist when parsing the config file
 # Even if empty, they must be defined for %(ENV_VAR_NAME)s syntax to work
 export VAST_TCP_PORT_70000="${VAST_TCP_PORT_70000:-}"
-export VAST_UDP_PORT_70001="${VAST_UDP_PORT_70001:-}"
+export VAST_UDP_PORT_70001="${VAST_UDP_PORT_70001:-}" # TODO: For some reason vast ai exports all available udp ports and leaves none for identity port mapping.
 export VAST_TCP_PORT_70002="${VAST_TCP_PORT_70002:-}"
 export VAST_TCP_PORT_22="${VAST_TCP_PORT_22:-}"
 
