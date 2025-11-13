@@ -129,6 +129,13 @@ if [ -n "$JUPYTER_PATH" ] && [ "$JUPYTER_PATH" != "/usr/local/bin/jupyter" ]; th
     sed -i "s|/usr/local/bin/jupyter|$JUPYTER_PATH|g" /etc/supervisor/conf.d/supervisord.conf
 fi
 
+# Remove VAST_TCP_PORT_22 from monitor service environment (SSH removed, no longer needed)
+# This is a workaround for old Docker images that still have this reference
+if grep -q 'VAST_TCP_PORT_22' /etc/supervisor/conf.d/supervisord.conf; then
+    log "Removing VAST_TCP_PORT_22 from monitor service environment..."
+    sed -i 's/,VAST_TCP_PORT_22="%(ENV_VAST_TCP_PORT_22)s"//g' /etc/supervisor/conf.d/supervisord.conf
+fi
+
 # Set default empty values for VAST_* environment variables if not set
 # Supervisord requires these variables to exist when parsing the config file
 # Even if empty, they must be defined for %(ENV_VAR_NAME)s syntax to work

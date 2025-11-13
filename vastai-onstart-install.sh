@@ -508,6 +508,13 @@ if [ -n "$SUPERVISORD_CONF" ]; then
         sed -i "s|/usr/local/bin/jupyter|$JUPYTER_PATH|g" "$TMP_CONF"
     fi
     
+    # Remove VAST_TCP_PORT_22 from monitor service environment (SSH removed, no longer needed)
+    # This is a workaround for old Docker images that still have this reference
+    if grep -q 'VAST_TCP_PORT_22' "$TMP_CONF"; then
+        log "Removing VAST_TCP_PORT_22 from monitor service environment..."
+        sed -i 's/,VAST_TCP_PORT_22="%(ENV_VAST_TCP_PORT_22)s"//g' "$TMP_CONF"
+    fi
+    
     # Copy the modified config to final location
     cp "$TMP_CONF" /etc/supervisor/conf.d/supervisord.conf
     rm -f "$TMP_CONF"
@@ -516,6 +523,12 @@ if [ -n "$SUPERVISORD_CONF" ]; then
     log "Supervisord configuration copied from $SUPERVISORD_CONF with updated paths"
     log "  Python: $PYTHON3_PATH"
     log "  Jupyter: $JUPYTER_PATH"
+fi
+
+# Also check and fix the final config file in case it wasn't updated above
+if grep -q 'VAST_TCP_PORT_22' /etc/supervisor/conf.d/supervisord.conf; then
+    log "Removing VAST_TCP_PORT_22 from monitor service environment (final check)..."
+    sed -i 's/,VAST_TCP_PORT_22="%(ENV_VAST_TCP_PORT_22)s"//g' /etc/supervisor/conf.d/supervisord.conf
 fi
 
 # Set proper file ownership and permissions
