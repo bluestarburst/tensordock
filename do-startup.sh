@@ -16,7 +16,9 @@ echo "=== TensorDock VM Setup Started at $(date) ==="
 TURN_USERNAME="${TURN_USERNAME:-user}"
 PUBLIC_IPADDR="${PUBLIC_IPADDR:-auto}"
 PYTHON_PORT="${PYTHON_PORT:-8765}"
-TURN_PORT="${TURN_PORT:-3478}"
+# Use a high ephemeral port (50000) to avoid conflicts with system services
+# Port 3478 is commonly used by system coturn services
+TURN_PORT="${TURN_PORT:-50000}"
 JUPYTER_PORT="${JUPYTER_PORT:-8888}"
 GITHUB_REPO="${GITHUB_REPO:-https://github.com/bluestarburst/tensordock.git}"
 GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
@@ -55,7 +57,7 @@ apt-get install -y --no-install-recommends \
   libffi-dev libssl-dev libnss3 libglu1-mesa libgl1 \
   libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libavfilter-dev libavdevice-dev \
   libopus0 libsrtp2-1 ffmpeg ca-certificates \
-  supervisor || {
+  supervisor lsof || {
   echo "WARNING: Some packages failed to install, continuing..."
 }
 
@@ -63,6 +65,32 @@ apt-get install -y --no-install-recommends \
 apt-get install -y --no-install-recommends coturn || {
   echo "WARNING: coturn installation failed, TURN server may not work"
 }
+
+# Stop and disable system coturn service if it exists (it might be using port 3478)
+# We'll run coturn via supervisor instead
+if systemctl list-units --full -a | grep -q 'coturn.service'; then
+  echo "Stopping system coturn service to free up port 3478..."
+  systemctl stop coturn 2>/dev/null || true
+  systemctl disable coturn 2>/dev/null || true
+  systemctl mask coturn 2>/dev/null || true
+fi
+
+# Check if port 3478 is in use and kill any process using it
+# This ensures we can use our chosen TURN port without conflicts
+if command -v lsof >/dev/null 2>&1; then
+  if lsof -i :3478 >/dev/null 2>&1; then
+    echo "Port 3478 is in use, attempting to free it..."
+    lsof -ti :3478 | xargs kill -9 2>/dev/null || true
+    sleep 1
+  fi
+elif command -v fuser >/dev/null 2>&1; then
+  if fuser 3478/udp >/dev/null 2>&1 || fuser 3478/tcp >/dev/null 2>&1; then
+    echo "Port 3478 is in use, attempting to free it..."
+    fuser -k 3478/udp 2>/dev/null || true
+    fuser -k 3478/tcp 2>/dev/null || true
+    sleep 1
+  fi
+fi
 
 pip3 install --upgrade pip setuptools wheel
 pip3 install --no-cache-dir supervisor
@@ -214,6 +242,11 @@ fi
 # Note: VAST_* port variables are used by monitor_service.py to update Firebase session ports
 # For DigitalOcean, ports use identity mapping (internal = external) since there's no port forwarding
 # The monitor service will read these and report: internal=8765, external=8765 (for example)
+echo "Setting up environment variables:"
+echo "  PYTHON_PORT=$PYTHON_PORT"
+echo "  TURN_PORT=$TURN_PORT (using high ephemeral port to avoid conflicts)"
+echo "  JUPYTER_PORT=$JUPYTER_PORT"
+
 cat <<ENVFILE >/opt/tensordock/runtime.env
 USER_ID="$USER_ID"
 INSTANCE_ID="$INSTANCE_ID"
