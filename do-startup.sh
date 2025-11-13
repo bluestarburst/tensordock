@@ -401,19 +401,60 @@ if command -v ufw >/dev/null 2>&1; then
     echo "WARNING: Failed to allow TURN port $TURN_PORT/udp"
   }
   
-  # Enable firewall (non-interactive) - use yes command for better compatibility
+  # Configure UFW to be enabled in config file (persists across reboots)
+  if [ -f /etc/ufw/ufw.conf ]; then
+    echo "Setting ENABLED=yes in /etc/ufw/ufw.conf..."
+    sed -i 's/^ENABLED=.*/ENABLED=yes/' /etc/ufw/ufw.conf 2>&1 || {
+      echo "WARNING: Failed to update /etc/ufw/ufw.conf"
+    }
+  fi
+  
+  # Enable UFW systemd service
+  if systemctl list-unit-files | grep -q ufw.service; then
+    echo "Enabling UFW systemd service..."
+    systemctl enable ufw 2>&1 || {
+      echo "WARNING: Failed to enable ufw systemd service"
+    }
+  fi
+  
+  # Enable firewall (non-interactive) - multiple methods for reliability
+  echo "Enabling UFW firewall..."
+  # Method 1: Use yes command
   yes | ufw --force enable 2>&1 || {
-    echo "ERROR: Failed to enable ufw - firewall may not be active!"
-    echo "Attempting to check status..."
-    ufw status || true
+    echo "Method 1 (yes | ufw enable) failed, trying alternative..."
+    # Method 2: Use echo with newline
+    echo -e "y\n" | ufw --force enable 2>&1 || {
+      echo "Method 2 failed, trying direct enable..."
+      # Method 3: Direct enable (may prompt, but --force should prevent it)
+      ufw --force enable 2>&1 || {
+        echo "ERROR: All methods to enable ufw failed!"
+        echo "UFW status:"
+        ufw status 2>&1 || true
+        echo "Attempting manual enable via systemctl..."
+        systemctl start ufw 2>&1 || true
+      }
+    }
   }
   
   # Verify firewall is enabled
-  sleep 1
-  if ufw status | grep -q "Status: active"; then
-    echo "Firewall is active"
+  sleep 2
+  UFW_STATUS=$(ufw status 2>&1 | head -1 || echo "unknown")
+  if echo "$UFW_STATUS" | grep -q "Status: active"; then
+    echo "✅ Firewall is active"
   else
-    echo "WARNING: Firewall may not be active - check manually with: sudo ufw status"
+    echo "⚠️  WARNING: Firewall may not be active"
+    echo "Current status: $UFW_STATUS"
+    echo "Attempting to start UFW service via systemctl..."
+    systemctl start ufw 2>&1 || true
+    sleep 1
+    UFW_STATUS=$(ufw status 2>&1 | head -1 || echo "unknown")
+    if echo "$UFW_STATUS" | grep -q "Status: active"; then
+      echo "✅ Firewall is now active (started via systemctl)"
+    else
+      echo "❌ ERROR: Firewall is still not active after all attempts"
+      echo "Please enable manually with: sudo ufw enable"
+      echo "Current status: $UFW_STATUS"
+    fi
   fi
   
   # Verify firewall rules

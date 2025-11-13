@@ -147,11 +147,27 @@ class WebRTCPeerManager(LoggerMixin):
         
         @pc.on("iceconnectionstatechange")
         async def on_ice_connection_state_change():
+            ice_state = pc.iceConnectionState
+            connection_state = pc.connectionState
             debug_log(f"🔗 [PeerManager] ICE connection state changed", {
                 "client_id": client_id,
-                "ice_state": pc.iceConnectionState,
+                "ice_state": ice_state,
+                "connection_state": connection_state,
                 "timestamp": datetime.datetime.now().isoformat()
             })
+            
+            # Log warnings for problematic states
+            if ice_state == "failed":
+                self.log_error(f"❌ [PeerManager] ICE connection failed - TURN server may not be working", {
+                    "client_id": client_id,
+                    "ice_state": ice_state,
+                    "connection_state": connection_state
+                })
+            elif ice_state == "disconnected":
+                debug_log(f"⚠️ [PeerManager] ICE connection disconnected - may reconnect", {
+                    "client_id": client_id,
+                    "connection_state": connection_state
+                })
         
         @pc.on("datachannel")
         def on_datachannel(channel: RTCDataChannel):
@@ -159,17 +175,41 @@ class WebRTCPeerManager(LoggerMixin):
         
         @pc.on("icecandidate")
         async def on_ice_candidate(candidate):
-            debug_log(f"🧊 [PeerManager] ICE candidate generated", {
-                "client_id": client_id,
-                "candidate_type": candidate.type if candidate else 'unknown',
-                "timestamp": datetime.datetime.now().isoformat()
-            })
+            if candidate:
+                debug_log(f"🧊 [PeerManager] ICE candidate generated", {
+                    "client_id": client_id,
+                    "candidate_type": candidate.type,
+                    "protocol": getattr(candidate, 'protocol', 'unknown'),
+                    "address": getattr(candidate, 'address', 'unknown'),
+                    "port": getattr(candidate, 'port', 'unknown'),
+                    "timestamp": datetime.datetime.now().isoformat()
+                })
+            else:
+                debug_log(f"🧊 [PeerManager] ICE candidate gathering complete", {
+                    "client_id": client_id,
+                    "timestamp": datetime.datetime.now().isoformat()
+                })
             
-            # Broadcast ICE candidate to client
-            await self.data_channel_manager.broadcast_message({
-                'action': 'ice_candidate',
-                'candidate': candidate
-            }, exclude_client_id=client_id)
+            # Try to send ICE candidate via data channel if available
+            # Note: ICE candidates are also included in SDP, so this is supplementary
+            # If data channel isn't ready yet, that's okay - SDP already has candidates
+            try:
+                if candidate and self.data_channel_manager.is_client_connected(client_id):
+                    self.data_channel_manager.send_message(client_id, {
+                        'action': 'ice_candidate',
+                        'candidate': {
+                            'candidate': candidate.candidate,
+                            'sdpMLineIndex': candidate.sdpMLineIndex,
+                            'sdpMid': candidate.sdpMid
+                        }
+                    })
+            except Exception as e:
+                # Don't fail if data channel isn't ready - SDP already contains candidates
+                debug_log(f"⚠️ [PeerManager] Could not send ICE candidate via data channel (this is normal if channel not ready)", {
+                    "client_id": client_id,
+                    "error": str(e),
+                    "timestamp": datetime.datetime.now().isoformat()
+                })
         
         @pc.on("icegatheringstatechange")
         async def on_ice_gathering_state_change():
