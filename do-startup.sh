@@ -187,20 +187,6 @@ echo "Updating supervisord.conf paths..."
 sed -i "s|directory=/app|directory=$APP_DIR|g" "$SUPERVISOR_CONF"
 sed -i "s|/app/|$APP_DIR/|g" "$SUPERVISOR_CONF"
 
-# Validate supervisord config before starting
-echo "Validating supervisord configuration..."
-if command -v supervisord >/dev/null 2>&1; then
-  if ! supervisord -c "$SUPERVISOR_CONF" -t 2>&1; then
-    echo "ERROR: supervisord configuration validation failed"
-    echo "Configuration file contents:"
-    cat "$SUPERVISOR_CONF" | head -50
-    exit 1
-  fi
-  echo "Supervisord configuration is valid"
-else
-  echo "WARNING: supervisord not found, skipping config validation"
-fi
-
 echo "Setting up supervisor socket directory..."
 rm -f /var/run/supervisor.sock
 mkdir -p /var/run
@@ -247,6 +233,35 @@ if getent group watcher >/dev/null 2>&1; then
   }
 else
   echo "WARNING: watcher group does not exist, skipping chown of runtime.env"
+fi
+
+# Export environment variables for supervisord validation
+# These are needed because supervisord.conf references them via %(ENV_VAR_NAME)s
+export VAST_TCP_PORT_70000="${VAST_TCP_PORT_70000:-$PYTHON_PORT}"
+export VAST_UDP_PORT_70001="${VAST_UDP_PORT_70001:-$TURN_PORT}"
+export VAST_TCP_PORT_70002="${VAST_TCP_PORT_70002:-$JUPYTER_PORT}"
+
+# Validate supervisord config before starting
+# Note: This validation happens after runtime.env is created and variables are exported
+echo "Validating supervisord configuration..."
+if command -v supervisord >/dev/null 2>&1; then
+  # Source the runtime.env file to ensure all variables are available for validation
+  set -a  # Automatically export all variables
+  source /opt/tensordock/runtime.env 2>/dev/null || true
+  set +a  # Turn off automatic export
+  
+  if ! supervisord -c "$SUPERVISOR_CONF" -t 2>&1; then
+    echo "ERROR: supervisord configuration validation failed"
+    echo "Configuration file contents:"
+    cat "$SUPERVISOR_CONF" | head -50
+    echo ""
+    echo "Environment variables available:"
+    env | grep -E "^(VAST_|TURN_|PUBLIC_IPADDR|JUPYTER_TOKEN|START_TURN)" | sort
+    exit 1
+  fi
+  echo "Supervisord configuration is valid"
+else
+  echo "WARNING: supervisord not found, skipping config validation"
 fi
 
 SUPERVISORD_BIN=$(command -v supervisord || true)
