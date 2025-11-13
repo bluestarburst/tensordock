@@ -316,35 +316,20 @@ export VAST_TCP_PORT_70000="${VAST_TCP_PORT_70000:-$PYTHON_PORT}"
 export VAST_UDP_PORT_70001="${VAST_UDP_PORT_70001:-$TURN_PORT}"
 export VAST_TCP_PORT_70002="${VAST_TCP_PORT_70002:-$JUPYTER_PORT}"
 
-# Validate supervisord config before starting
-# Note: This validation happens after runtime.env is created and variables are exported
-echo "Validating supervisord configuration..."
-if command -v supervisord >/dev/null 2>&1; then
-  # Source the runtime.env file to ensure all variables are available for validation
-  set -a  # Automatically export all variables
-  source /opt/tensordock/runtime.env 2>/dev/null || true
-  set +a  # Turn off automatic export
-  
-  # Use timeout to prevent hanging - validation should be quick
-  if ! timeout 10 supervisord -c "$SUPERVISOR_CONF" -t 2>&1; then
-    EXIT_CODE=$?
-    if [ $EXIT_CODE -eq 124 ]; then
-      echo "ERROR: supervisord configuration validation timed out after 10 seconds"
-      echo "This may indicate a problem with the configuration or system resources"
-    else
-      echo "ERROR: supervisord configuration validation failed (exit code: $EXIT_CODE)"
-    fi
-    echo "Configuration file contents:"
-    cat "$SUPERVISOR_CONF" | head -50
-    echo ""
-    echo "Environment variables available:"
-    env | grep -E "^(VAST_|TURN_|PUBLIC_IPADDR|JUPYTER_TOKEN|START_TURN)" | sort
-    exit 1
-  fi
-  echo "✅ Supervisord configuration is valid"
-else
-  echo "WARNING: supervisord not found, skipping config validation"
+# Basic validation - just check that config file exists and is readable
+# Note: supervisord -t actually starts supervisord, which causes issues, so we skip full validation
+echo "Checking supervisord configuration file..."
+if [ ! -f "$SUPERVISOR_CONF" ]; then
+  echo "ERROR: supervisord configuration file not found: $SUPERVISOR_CONF"
+  exit 1
 fi
+
+if [ ! -r "$SUPERVISOR_CONF" ]; then
+  echo "ERROR: supervisord configuration file is not readable: $SUPERVISOR_CONF"
+  exit 1
+fi
+
+echo "✅ Supervisord configuration file exists and is readable"
 
 # Now start supervisord AFTER firewall is configured
 SUPERVISORD_BIN=$(command -v supervisord || true)
@@ -415,4 +400,7 @@ fi
 
 echo "=== TensorDock VM Setup Completed at $(date) ==="
 echo "Setup script finished. Services should be starting via systemd."
+
+# Explicitly exit with success code to ensure cloud-init reports success
+exit 0
 
