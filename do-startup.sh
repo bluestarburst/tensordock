@@ -51,7 +51,7 @@ apt-get --fix-broken install -y || true
 
 # Install essential packages first
 apt-get install -y --no-install-recommends \
-  python3 python3-venv python3-pip git curl build-essential pkg-config \
+  python3 python3-dev python3-venv python3-pip git curl build-essential pkg-config \
   libffi-dev libssl-dev libnss3 libglu1-mesa libgl1 \
   libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libavfilter-dev libavdevice-dev \
   libopus0 libsrtp2-1 ffmpeg ca-certificates \
