@@ -125,15 +125,24 @@ class HTTPProxyService(LoggerMixin):
         """Execute the actual HTTP request."""
         try:
             # Prepare request parameters
-            # CRITICAL: Merge custom headers with default Jupyter headers
-            request_headers = self.headers.copy()
+            # CRITICAL: Always use the token from environment variable (config)
+            # This ensures the token matches what Jupyter server was started with
+            # The frontend should send the same token, but we always use the backend's token
+            # to ensure consistency with the Jupyter server configuration
+            request_headers = self.headers.copy()  # Start with default headers (includes correct token)
             if headers:
-                request_headers.update(headers)
-                debug_log(f"🌐 [HTTPProxy] Merged headers", {
-                    "default_headers": list(self.headers.keys()),
-                    "custom_headers": list(headers.keys()),
-                    "final_headers": list(request_headers.keys())
-                })
+                # Merge other headers from incoming request, but keep our Authorization header
+                for key, value in headers.items():
+                    if key.lower() != 'authorization':
+                        request_headers[key] = value
+            
+            debug_log(f"🌐 [HTTPProxy] Merged headers", {
+                "default_headers": list(self.headers.keys()),
+                "custom_headers": list(headers.keys()) if headers else [],
+                "final_headers": list(request_headers.keys()),
+                "authorization_token_source": "environment_variable",
+                "incoming_authorization": headers.get('Authorization') if headers else None
+            })
             
             kwargs = {
                 'headers': request_headers,
