@@ -116,6 +116,7 @@ cp "$APP_DIR/supervisord.conf" "$SUPERVISOR_CONF"
 PYTHON_BIN=$(command -v python3)
 JUPYTER_BIN=$(command -v jupyter)
 
+# Update Python and Jupyter binary paths
 if [ -n "$PYTHON_BIN" ]; then
   sed -i "s|/usr/local/bin/python|$PYTHON_BIN|g" "$SUPERVISOR_CONF"
   sed -i "s|/usr/bin/python3|$PYTHON_BIN|g" "$SUPERVISOR_CONF"
@@ -124,6 +125,10 @@ fi
 if [ -n "$JUPYTER_BIN" ]; then
   sed -i "s|/usr/local/bin/jupyter|$JUPYTER_BIN|g" "$SUPERVISOR_CONF"
 fi
+
+# Update directory paths from /app to DigitalOcean path
+sed -i "s|directory=/app|directory=$APP_DIR|g" "$SUPERVISOR_CONF"
+sed -i "s|/app/|$APP_DIR/|g" "$SUPERVISOR_CONF"
 
 rm -f /var/run/supervisor.sock
 mkdir -p /var/run
@@ -185,15 +190,34 @@ SERVICE
 sed -i "s|@SUPERVISORD_BIN@|$SUPERVISORD_BIN|" /etc/systemd/system/tensordock-supervisor.service
 
 systemctl daemon-reload
-systemctl enable --now tensordock-supervisor.service
+systemctl enable tensordock-supervisor.service
+
+# Start the service in the background to avoid blocking cloud-init
+# Use 'start' instead of '--now' to avoid waiting, and check status separately
+systemctl start tensordock-supervisor.service || {
+  echo "WARNING: Failed to start tensordock-supervisor.service"
+  echo "Checking service status..."
+  systemctl status tensordock-supervisor.service --no-pager || true
+}
+
+# Give supervisord a moment to start, then verify it's running
+sleep 2
+if ! systemctl is-active --quiet tensordock-supervisor.service; then
+  echo "WARNING: tensordock-supervisor.service is not active"
+  echo "Checking logs..."
+  journalctl -u tensordock-supervisor.service --no-pager -n 20 || true
+fi
 
 if command -v ufw >/dev/null 2>&1; then
   echo "Configuring firewall rules..."
-  ufw allow $PYTHON_PORT/tcp || true
-  ufw allow $JUPYTER_PORT/tcp || true
-  ufw allow $TURN_PORT/udp || true
-  ufw --force enable || true
+  # Use non-interactive mode and timeout to prevent hanging
+  ufw --force allow $PYTHON_PORT/tcp 2>&1 || true
+  ufw --force allow $JUPYTER_PORT/tcp 2>&1 || true
+  ufw --force allow $TURN_PORT/udp 2>&1 || true
+  # Enable firewall with timeout to prevent interactive prompts
+  echo "y" | ufw --force enable 2>&1 || true
 fi
 
 echo "=== TensorDock VM Setup Completed at $(date) ==="
+echo "Setup script finished. Services should be starting via systemd."
 
