@@ -100,16 +100,57 @@ if [ ! -f "$APP_DIR/supervisord.conf" ]; then
   exit 1
 fi
 
-pip3 install --no-cache-dir -r "$APP_DIR/requirements.txt"
+echo "Installing Python dependencies..."
+pip3 install --no-cache-dir -r "$APP_DIR/requirements.txt" || {
+  echo "ERROR: Failed to install Python dependencies"
+  exit 1
+}
 
+echo "Creating directories..."
 mkdir -p /var/log/supervisor /tmp/tensordock-logs "$APP_DIR/logs" \
   /tmp/.local/share /tmp/.config /tmp/.cache \
   /tmp/jupyter-runtime /tmp/jupyter-data /tmp/jupyter-config
 
-chown -R appuser:appuser "$APP_DIR" /tmp/tensordock-logs \
-  /tmp/.local/share /tmp/.config /tmp/.cache /tmp/jupyter-runtime /tmp/jupyter-data /tmp/jupyter-config || true
-chown watcher:watcher "$APP_DIR/monitor_service.py" 2>/dev/null || true
-chmod 750 "$APP_DIR/monitor_service.py" 2>/dev/null || true
+echo "Setting up file permissions..."
+# Verify users exist before chown operations
+if ! id appuser >/dev/null 2>&1; then
+  echo "ERROR: appuser does not exist"
+  exit 1
+fi
+
+if ! id watcher >/dev/null 2>&1; then
+  echo "ERROR: watcher user does not exist"
+  exit 1
+fi
+
+# Set ownership for tmp directories first (smaller, faster)
+chown -R appuser:appuser /tmp/tensordock-logs \
+  /tmp/.local/share /tmp/.config /tmp/.cache \
+  /tmp/jupyter-runtime /tmp/jupyter-data /tmp/jupyter-config 2>&1 || {
+  echo "WARNING: Failed to chown tmp directories, continuing..."
+}
+
+# Set ownership for log directory
+chown -R appuser:appuser "$APP_DIR/logs" 2>&1 || {
+  echo "WARNING: Failed to chown log directory, continuing..."
+}
+
+# Only chown Python files and directories, not the entire repo (faster)
+# This avoids hanging on large git repositories with many files
+echo "Setting ownership for Python files and directories..."
+# Chown directories first (faster, fewer operations)
+find "$APP_DIR" -type d -exec chown appuser:appuser {} \; 2>&1 | grep -v "Permission denied" | head -5 || true
+# Then chown Python files
+find "$APP_DIR" -type f -name "*.py" ! -name "monitor_service.py" -exec chown appuser:appuser {} \; 2>&1 | grep -v "Permission denied" | head -5 || true
+echo "File ownership setup completed"
+
+# Set ownership for monitor_service.py specifically
+chown watcher:watcher "$APP_DIR/monitor_service.py" 2>&1 || {
+  echo "WARNING: Failed to chown monitor_service.py"
+}
+chmod 750 "$APP_DIR/monitor_service.py" 2>&1 || {
+  echo "WARNING: Failed to chmod monitor_service.py"
+}
 
 cp "$APP_DIR/supervisord.conf" "$SUPERVISOR_CONF"
 
@@ -127,13 +168,37 @@ if [ -n "$JUPYTER_BIN" ]; then
 fi
 
 # Update directory paths from /app to DigitalOcean path
+echo "Updating supervisord.conf paths..."
 sed -i "s|directory=/app|directory=$APP_DIR|g" "$SUPERVISOR_CONF"
 sed -i "s|/app/|$APP_DIR/|g" "$SUPERVISOR_CONF"
 
+# Validate supervisord config before starting
+echo "Validating supervisord configuration..."
+if command -v supervisord >/dev/null 2>&1; then
+  if ! supervisord -c "$SUPERVISOR_CONF" -t 2>&1; then
+    echo "ERROR: supervisord configuration validation failed"
+    echo "Configuration file contents:"
+    cat "$SUPERVISOR_CONF" | head -50
+    exit 1
+  fi
+  echo "Supervisord configuration is valid"
+else
+  echo "WARNING: supervisord not found, skipping config validation"
+fi
+
+echo "Setting up supervisor socket directory..."
 rm -f /var/run/supervisor.sock
 mkdir -p /var/run
 chmod 1777 /var/run
-chown root:watcher /var/run 2>/dev/null || true
+
+# Verify watcher group exists before chown
+if getent group watcher >/dev/null 2>&1; then
+  chown root:watcher /var/run 2>&1 || {
+    echo "WARNING: Failed to chown /var/run to root:watcher"
+  }
+else
+  echo "WARNING: watcher group does not exist, skipping chown of /var/run"
+fi
 
 if [ -z "$JUPYTER_TOKEN" ]; then
   JUPYTER_TOKEN=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32 || echo "token-$(date +%s)")
@@ -161,7 +226,13 @@ VAST_TCP_PORT_70002="$JUPYTER_PORT"
 ENVFILE
 
 chmod 640 /opt/tensordock/runtime.env
-chown root:watcher /opt/tensordock/runtime.env || true
+if getent group watcher >/dev/null 2>&1; then
+  chown root:watcher /opt/tensordock/runtime.env 2>&1 || {
+    echo "WARNING: Failed to chown runtime.env"
+  }
+else
+  echo "WARNING: watcher group does not exist, skipping chown of runtime.env"
+fi
 
 SUPERVISORD_BIN=$(command -v supervisord || true)
 if [ -z "$SUPERVISORD_BIN" ]; then
@@ -189,15 +260,30 @@ SERVICE
 
 sed -i "s|@SUPERVISORD_BIN@|$SUPERVISORD_BIN|" /etc/systemd/system/tensordock-supervisor.service
 
-systemctl daemon-reload
-systemctl enable tensordock-supervisor.service
+echo "Reloading systemd daemon..."
+systemctl daemon-reload || {
+  echo "ERROR: systemctl daemon-reload failed"
+  exit 1
+}
 
-# Start the service in the background to avoid blocking cloud-init
-# Use 'start' instead of '--now' to avoid waiting, and check status separately
-systemctl start tensordock-supervisor.service || {
-  echo "WARNING: Failed to start tensordock-supervisor.service"
+echo "Enabling tensordock-supervisor.service..."
+systemctl enable tensordock-supervisor.service || {
+  echo "WARNING: Failed to enable tensordock-supervisor.service"
+}
+
+echo "Starting tensordock-supervisor.service..."
+# Start the service with a timeout to prevent hanging
+timeout 30 systemctl start tensordock-supervisor.service || {
+  EXIT_CODE=$?
+  if [ $EXIT_CODE -eq 124 ]; then
+    echo "ERROR: systemctl start timed out after 30 seconds"
+  else
+    echo "WARNING: Failed to start tensordock-supervisor.service (exit code: $EXIT_CODE)"
+  fi
   echo "Checking service status..."
-  systemctl status tensordock-supervisor.service --no-pager || true
+  systemctl status tensordock-supervisor.service --no-pager -l || true
+  echo "Checking journal logs..."
+  journalctl -u tensordock-supervisor.service --no-pager -n 30 || true
 }
 
 # Give supervisord a moment to start, then verify it's running
