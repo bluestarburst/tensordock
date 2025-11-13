@@ -21,7 +21,7 @@ for var in $(env | grep -E '^VAST_' | cut -d= -f1); do
 done
 
 # Persist VAST_* and other important environment variables to /etc/environment
-# This makes them available in SSH and Jupyter sessions
+# This makes them available in Jupyter sessions
 log "Persisting environment variables to /etc/environment..."
 env | grep -E '^(VAST_|USER_ID|INSTANCE_ID|RESOURCE_TYPE|MONITOR_API_KEY|FIREBASE_FUNCTIONS_URL|START_TURN|JUPYTER_TOKEN|TURN_USERNAME|TURN_PASSWORD|PUBLIC_IPADDR|GITHUB_REPO|GITHUB_BRANCH)=' >> /etc/environment || {
     log "WARNING: Failed to write to /etc/environment (non-critical)"
@@ -135,7 +135,6 @@ fi
 export VAST_TCP_PORT_70000="${VAST_TCP_PORT_70000:-}"
 export VAST_UDP_PORT_70001="${VAST_UDP_PORT_70001:-}" # TODO: For some reason vast ai exports all available udp ports and leaves none for identity port mapping.
 export VAST_TCP_PORT_70002="${VAST_TCP_PORT_70002:-}"
-export VAST_TCP_PORT_22="${VAST_TCP_PORT_22:-}"
 
 # Clean up supervisor socket if it exists from previous run
 # This ensures supervisord can create it fresh with correct permissions
@@ -168,7 +167,6 @@ log "  PUBLIC_IPADDR: ${PUBLIC_IPADDR:-<not set>}"
 log "  VAST_TCP_PORT_70000: ${VAST_TCP_PORT_70000:-<not set>}"
 log "  VAST_UDP_PORT_70001: ${VAST_UDP_PORT_70001:-<not set>}"
 log "  VAST_TCP_PORT_70002: ${VAST_TCP_PORT_70002:-<not set>}"
-log "  VAST_TCP_PORT_22: ${VAST_TCP_PORT_22:-<not set>}"
 
 exec "$SUPERVISORD_PATH" -c /etc/supervisor/conf.d/supervisord.conf -n
 

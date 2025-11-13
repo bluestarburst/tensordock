@@ -18,7 +18,6 @@ PUBLIC_IPADDR="${PUBLIC_IPADDR:-auto}"
 PYTHON_PORT="${PYTHON_PORT:-8765}"
 TURN_PORT="${TURN_PORT:-3478}"
 JUPYTER_PORT="${JUPYTER_PORT:-8888}"
-SSH_PORT="${SSH_PORT:-22}"
 GITHUB_REPO="${GITHUB_REPO:-https://github.com/bluestarburst/tensordock.git}"
 GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
 APP_ROOT="/opt/tensordock"
@@ -55,7 +54,7 @@ apt-get install -y --no-install-recommends \
   python3 python3-venv python3-pip git curl build-essential pkg-config \
   libffi-dev libssl-dev libnss3 libglu1-mesa libgl1 \
   libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libavfilter-dev libavdevice-dev \
-  libopus0 libsrtp2-1 ffmpeg openssh-server ca-certificates \
+  libopus0 libsrtp2-1 ffmpeg ca-certificates \
   supervisor || {
   echo "WARNING: Some packages failed to install, continuing..."
 }
@@ -154,7 +153,6 @@ PUBLIC_IPADDR="$PUBLIC_IPADDR"
 VAST_TCP_PORT_70000="$PYTHON_PORT"
 VAST_UDP_PORT_70001="$TURN_PORT"
 VAST_TCP_PORT_70002="$JUPYTER_PORT"
-VAST_TCP_PORT_22="$SSH_PORT"
 ENVFILE
 
 chmod 640 /opt/tensordock/runtime.env

@@ -32,7 +32,7 @@ for var in $(env | grep -E '^VAST_' | cut -d= -f1); do
 done
 
 # Persist VAST_* and other important environment variables to /etc/environment
-# This makes them available in SSH and Jupyter sessions
+# This makes them available in Jupyter sessions
 log "Persisting environment variables to /etc/environment..."
 env | grep -E '^(VAST_|USER_ID|INSTANCE_ID|RESOURCE_TYPE|MONITOR_API_KEY|FIREBASE_FUNCTIONS_URL|START_TURN|JUPYTER_TOKEN|TURN_USERNAME|TURN_PASSWORD|PUBLIC_IPADDR|GITHUB_REPO|GITHUB_BRANCH)=' >> /etc/environment || {
     log "WARNING: Failed to write to /etc/environment (non-critical)"
@@ -80,15 +80,15 @@ else
     log "Supervisor already installed at: $(which supervisord)"
 fi
 
-# Install coturn and openssh-server with retry logic
-log "Installing coturn and openssh-server..."
+# Install coturn with retry logic
+log "Installing coturn..."
 success=false
 for i in 1 2 3 4 5; do
     log "Installation attempt $i of 5..."
     apt-get clean
     rm -rf /var/lib/apt/lists/*
     apt-get update -o Acquire::CompressionTypes::Order::=gz -qq || true
-    if apt-get install -y --no-install-recommends coturn openssh-server; then
+    if apt-get install -y --no-install-recommends coturn; then
         success=true
         log "Installation successful on attempt $i"
         break
@@ -99,7 +99,7 @@ for i in 1 2 3 4 5; do
 done
 
 if [ "$success" != "true" ]; then
-    log "ERROR: Failed to install coturn and openssh-server after 5 attempts"
+    log "ERROR: Failed to install coturn after 5 attempts"
     exit 1
 fi
 
@@ -575,7 +575,6 @@ log "Supervisord found at: $SUPERVISORD_PATH"
 export VAST_TCP_PORT_70000="${VAST_TCP_PORT_70000:-}"
 export VAST_UDP_PORT_70001="${VAST_UDP_PORT_70001:-}"
 export VAST_TCP_PORT_70002="${VAST_TCP_PORT_70002:-}"
-export VAST_TCP_PORT_22="${VAST_TCP_PORT_22:-}"
 
 # Clean up supervisor socket if it exists from previous run
 # This ensures supervisord can create it fresh with correct permissions (chown directive)
@@ -612,7 +611,6 @@ log "  PUBLIC_IPADDR: ${PUBLIC_IPADDR:-<not set>}"
 log "  VAST_TCP_PORT_70000: ${VAST_TCP_PORT_70000:-<not set>}"
 log "  VAST_UDP_PORT_70001: ${VAST_UDP_PORT_70001:-<not set>}"
 log "  VAST_TCP_PORT_70002: ${VAST_TCP_PORT_70002:-<not set>}"
-log "  VAST_TCP_PORT_22: ${VAST_TCP_PORT_22:-<not set>}"
 
 exec "$SUPERVISORD_PATH" -c /etc/supervisor/conf.d/supervisord.conf -n
 
