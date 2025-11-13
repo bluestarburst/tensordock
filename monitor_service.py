@@ -736,6 +736,8 @@ class MonitorService:
     async def monitor_loop(self):
         """Main monitoring loop - checks services ready, credits, heartbeat, and process health"""
         logger.info("Starting monitoring loop")
+
+        await asyncio.sleep(5)  # Wait 5 seconds to ensure all services are started
         
         # Update session ports and IP from environment variables on startup
         # This ensures the session document has the correct external ports and IP
@@ -747,8 +749,6 @@ class MonitorService:
         
         while True:
             try:
-                await asyncio.sleep(60)  # Check every minute
-                
                 # Check process health (logs warnings only if services are actually down)
                 process_health_ok = self._check_process_health()
                 
@@ -782,7 +782,9 @@ class MonitorService:
                 await self.terminate_session("manual_stop")
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {e}")
-                await asyncio.sleep(60)  # Continue monitoring despite errors
+                await asyncio.sleep(0.1)  # Continue monitoring despite errors
+
+            await asyncio.sleep(60)  # Check every minute
 
 async def main():
     """Main entry point for monitoring service"""
