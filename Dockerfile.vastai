@@ -1,0 +1,203 @@
+# syntax=docker/dockerfile:1.6
+# TensorDock Custom Docker Image for VastAI
+# Based on vastai/pytorch derivative which includes PyTorch, CUDA, and Python
+# This image pre-bakes all dependencies to reduce startup time from 5-10 minutes to 30-60 seconds
+
+# Build arguments
+ARG PYTORCH_BASE=vastai/pytorch:2.5.1-cuda-12.1.1
+ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
+
+FROM ${PYTORCH_BASE}
+
+USER root
+
+# Environment variables
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Layer 1: Configure APT for reliability (rarely changes)
+RUN mkdir -p /etc/apt/apt.conf.d && \
+    echo 'Acquire::By-Hash "yes";' > /etc/apt/apt.conf.d/99acquire-by-hash && \
+    echo "Acquire::http::Pipeline-Depth 0;" > /etc/apt/apt.conf.d/99fixbadproxy && \
+    echo "Acquire::http::No-Cache true;" >> /etc/apt/apt.conf.d/99fixbadproxy && \
+    echo "Acquire::BrokenProxy true;" >> /etc/apt/apt.conf.d/99fixbadproxy && \
+    echo "Acquire::Check-Valid-Until false;" >> /etc/apt/apt.conf.d/99fixbadproxy
+
+# Layer 2: Install basic tools (rarely changes)
+RUN apt-get clean && \
+    apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        git \
+        procps \
+        openssl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Layer 3: Install supervisor via pip (more reliable than apt)
+RUN pip install --no-cache-dir supervisor
+
+# Layer 4: Install coturn and openssh-server with retry logic
+RUN set -eux; \
+    success=false; \
+    for i in 1 2 3 4 5; do \
+        echo "Installation attempt $i of 5..." && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/* && \
+        apt-get update -o Acquire::CompressionTypes::Order::=gz -qq || true && \
+        if apt-get install -y --no-install-recommends coturn openssh-server; then \
+            success=true && \
+            echo "Installation successful on attempt $i" && \
+            break; \
+        else \
+            echo "Attempt $i failed, retrying in 10 seconds..." && \
+            sleep 10; \
+        fi; \
+    done && \
+    if [ "$success" != "true" ]; then \
+        echo "ERROR: Failed to install coturn and openssh-server after 5 attempts" && \
+        exit 1; \
+    fi && \
+    rm -rf /var/lib/apt/lists/*
+
+# Layer 5: Configure SSH server
+RUN mkdir -p /var/run/sshd && \
+    echo 'root:root' | chpasswd && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config
+
+# Layer 6: Install build dependencies for Python packages (especially PyAV/av)
+RUN apt-get clean && \
+    apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        pkg-config \
+        python3-dev \
+        build-essential && \
+    rm -rf /var/lib/apt/lists/*
+
+# Layer 7: Install FFmpeg development libraries (required for PyAV)
+RUN apt-get clean && \
+    apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        libavcodec-dev \
+        libavformat-dev \
+        libavutil-dev \
+        libswscale-dev \
+        libavfilter-dev \
+        libavdevice-dev 2>/dev/null || \
+    apt-get install -y --no-install-recommends \
+        ffmpeg \
+        libavcodec-dev \
+        libavformat-dev 2>/dev/null || true && \
+    rm -rf /var/lib/apt/lists/*
+
+# Layer 8: Install multimedia runtime libraries (optional, don't fail if unavailable)
+RUN apt-get clean && \
+    apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        libopus0 \
+        libsrtp2-1 2>/dev/null || true && \
+    (apt-get install -y --no-install-recommends libvpx9 2>/dev/null || \
+     apt-get install -y --no-install-recommends libvpx7 2>/dev/null || \
+     apt-get install -y --no-install-recommends libvpx6 2>/dev/null || true) && \
+    rm -rf /var/lib/apt/lists/*
+
+# Layer 9: Create users (appuser UID 1000, watcher UID 1001)
+# Check if users exist first, as the base image may already have users with these UIDs
+RUN set -eux; \
+    if ! id -u appuser >/dev/null 2>&1; then \
+        if id -u 1000 >/dev/null 2>&1; then \
+            echo "UID 1000 already exists, creating appuser with next available UID"; \
+            useradd -m -s /bin/bash appuser; \
+        else \
+            useradd -m -u 1000 -s /bin/bash appuser; \
+        fi; \
+    else \
+        echo "User appuser already exists"; \
+    fi && \
+    if ! id -u watcher >/dev/null 2>&1; then \
+        if id -u 1001 >/dev/null 2>&1; then \
+            echo "UID 1001 already exists, creating watcher with next available UID"; \
+            useradd -m -s /bin/bash watcher; \
+        else \
+            useradd -m -u 1001 -s /bin/bash watcher; \
+        fi; \
+    else \
+        echo "User watcher already exists"; \
+    fi
+
+# Layer 10: Copy requirements.txt and install Python dependencies (changes occasionally)
+# This layer is cached separately from code, so code changes don't invalidate pip install
+COPY tensordock/requirements.txt /tmp/requirements.txt
+RUN set -eux; \
+    PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}' | cut -d. -f1,2); \
+    PYTHON_MAJOR=$(echo "$PYTHON_VERSION" | cut -d. -f1); \
+    PYTHON_MINOR=$(echo "$PYTHON_VERSION" | cut -d. -f2); \
+    if [ "$PYTHON_MAJOR" -gt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -ge 12 ]); then \
+        pip install --no-cache-dir --break-system-packages --ignore-installed -r /tmp/requirements.txt; \
+    else \
+        pip install --no-cache-dir --ignore-installed -r /tmp/requirements.txt; \
+    fi && \
+    rm -f /tmp/requirements.txt
+
+# Layer 11: Create directories and set up structure
+RUN mkdir -p /app \
+             /var/log/supervisor \
+             /app/logs \
+             /tmp/tensordock-logs \
+             /tmp/.local/share \
+             /tmp/.config \
+             /tmp/.cache \
+             /tmp/jupyter-runtime \
+             /tmp/jupyter-data \
+             /tmp/jupyter-config && \
+    chmod 1777 /var/run && \
+    chmod 755 /app/logs /tmp/tensordock-logs && \
+    chown -R appuser:appuser /app/logs /tmp/tensordock-logs \
+                             /tmp/.local/share /tmp/.config /tmp/.cache \
+                             /tmp/jupyter-runtime /tmp/jupyter-data /tmp/jupyter-config
+
+# Layer 12: Copy application code (changes frequently - last layer for better caching)
+WORKDIR /app
+COPY tensordock/ /app/
+
+# Layer 13: Remove control-plane directory if it exists
+RUN rm -rf /app/control-plane
+
+# Layer 14: Copy and set up diagnostic scripts
+COPY tensordock/diagnose-container.sh /app/diagnose-container.sh
+COPY tensordock/show-env-vars.sh /app/show-env-vars.sh
+RUN chmod +x /app/diagnose-container.sh /app/show-env-vars.sh
+
+# Layer 15: Copy supervisor config (will be updated at runtime with env vars)
+COPY tensordock/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Layer 16: Set proper file ownership and permissions
+RUN chown watcher:watcher /app/monitor_service.py && \
+    chmod 750 /app/monitor_service.py && \
+    chown -R appuser:appuser /app/logs && \
+    find /app -type f -name "*.py" ! -name "monitor_service.py" -exec chown appuser:appuser {} \; && \
+    find /app -type d ! -path "/app" -exec chown appuser:appuser {} \; && \
+    chmod -R 755 /app && \
+    chmod 750 /app/monitor_service.py && \
+    chown root:root /etc/supervisor/conf.d/supervisord.conf && \
+    chmod 644 /etc/supervisor/conf.d/supervisord.conf && \
+    chown -R watcher:watcher /var/log/supervisor && \
+    chmod 755 /app/start.sh 2>/dev/null || true
+
+# Expose ports
+EXPOSE 22 8888 8765 3478/udp 49152-65535/udp
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8888/ || exit 1
+
+# Default CMD (will be overridden by VastAI onstart script)
+# The onstart script will export VAST_* variables and start supervisord
+CMD ["/usr/local/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf", "-n"]
+

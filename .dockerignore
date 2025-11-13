@@ -1,0 +1,89 @@
+# Git files
+.git
+.gitignore
+.gitmodules
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+!README.md
+
+# Test files
+test_*.py
+*_test.py
+tests/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+*.ipynb
+
+# Control plane (not needed in image)
+control-plane/
+
+# Other Dockerfiles (not needed)
+Dockerfile.unified
+Dockerfile.user
+Dockerfile.control
+
+# Build scripts (not needed in image)
+build-*.sh
+runpod-template/
+
+# View scripts (not needed in image)
+view*.sh
+
+# Export files
+export.html
+
+# Repomix output
+.repomix-output.txt
+
+# Test notebooks
+test.ipynb
+tmp.ipynb
+Untitled.ipynb
+widget_test.ipynb
+
+# Old onstart script (replaced by minimal version)
+# Keep vastai-onstart-install.sh for reference but don't include in image
+# vastai-onstart-install.sh
+
