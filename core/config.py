@@ -59,13 +59,53 @@ class ServerConfig:
         self.is_local = os.environ.get('IS_LOCAL', 'false') == 'true'
         
         # TURN server settings
+        # Get public IP address - must be a valid IP, not "0.0.0.0" or "auto"
+        public_ip = os.environ.get('PUBLIC_IPADDR', '')
+        if not public_ip or public_ip == 'auto' or public_ip == '0.0.0.0':
+            # Try to detect public IP if not set or invalid
+            try:
+                import urllib.request
+                # Try DigitalOcean metadata first
+                try:
+                    with urllib.request.urlopen('http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address', timeout=2) as response:
+                        public_ip = response.read().decode('utf-8').strip()
+                except Exception:
+                    # Fallback to external service
+                    try:
+                        with urllib.request.urlopen('https://ifconfig.co', timeout=3) as response:
+                            public_ip = response.read().decode('utf-8').strip()
+                    except Exception:
+                        public_ip = None
+            except Exception:
+                public_ip = None
+        
+        # Validate IP address format (basic check)
+        if public_ip and not (public_ip.startswith('0.0.0.0') or public_ip == 'auto'):
+            # Basic IP validation - check if it looks like an IP address
+            import re
+            ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+            if not re.match(ip_pattern, public_ip):
+                public_ip = None
+        
+        # Use detected IP or fallback to localhost for local development
+        if not public_ip or public_ip == '0.0.0.0':
+            if self.is_local:
+                public_ip = '127.0.0.1'
+            else:
+                # For non-local, we need a valid public IP - log warning
+                print(f"⚠️  WARNING: PUBLIC_IPADDR is not set or invalid ({os.environ.get('PUBLIC_IPADDR', 'not set')}). "
+                      f"TURN server may not work correctly. Falling back to localhost.")
+                public_ip = '127.0.0.1'  # Fallback, but this won't work for external connections
+        
+        turn_port = os.environ.get('VAST_UDP_PORT_70001', str(self.vast_udp_port))
+        
         self.turn_server_address = os.environ.get(
             'TURN_ADDRESS', 
-            f"0.0.0.0:{os.environ.get('VAST_UDP_PORT_70001', self.vast_udp_port)}?transport=udp"
+            f"0.0.0.0:{turn_port}?transport=udp"
         )
         self.turn_client_address = os.environ.get(
             'TURN_ADDRESS', 
-            f"{os.environ.get('PUBLIC_IPADDR', '0.0.0.0')}:{os.environ.get('VAST_UDP_PORT_70001', self.vast_udp_port)}?transport=udp"
+            f"{public_ip}:{turn_port}?transport=udp"
         )
         self.turn_username = os.environ.get('TURN_USERNAME', 'user')
         self.turn_password = os.environ.get('TURN_PASSWORD', 'password')

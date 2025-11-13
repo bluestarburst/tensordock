@@ -178,6 +178,14 @@ chown -R appuser:appuser "$APP_DIR/logs" 2>&1 || {
   echo "WARNING: Failed to chown log directory, continuing..."
 }
 
+# Create TURN server database directory (SQLite is optional but prevents errors)
+# TURN server uses static credentials, so DB is not required, but creating it prevents warnings
+mkdir -p /var/lib/turn
+chown -R appuser:appuser /var/lib/turn 2>&1 || {
+  echo "WARNING: Failed to create/chown TURN database directory, continuing..."
+}
+chmod 755 /var/lib/turn 2>&1 || true
+
 # Only chown Python files and directories, not the entire repo (faster)
 # This avoids hanging on large git repositories with many files
 echo "Setting ownership for Python files and directories..."
@@ -363,8 +371,18 @@ fi
 
 if command -v ufw >/dev/null 2>&1; then
   echo "Configuring firewall rules to expose ports..."
-  # Allow SSH first to prevent lockout (should already be allowed, but be safe)
-  ufw --force allow 22/tcp 2>&1 || true
+  
+  # Reset UFW to defaults first (non-interactive)
+  ufw --force reset 2>&1 || true
+  
+  # Set default policies (deny incoming, allow outgoing)
+  ufw --force default deny incoming 2>&1 || true
+  ufw --force default allow outgoing 2>&1 || true
+  
+  # Allow SSH first to prevent lockout (CRITICAL - must be first)
+  ufw --force allow 22/tcp 2>&1 || {
+    echo "ERROR: Failed to allow SSH port 22/tcp - this could lock you out!"
+  }
   
   # Allow application ports
   # For DigitalOcean, these are the actual external ports (identity mapping)
@@ -383,14 +401,28 @@ if command -v ufw >/dev/null 2>&1; then
     echo "WARNING: Failed to allow TURN port $TURN_PORT/udp"
   }
   
-  # Enable firewall (non-interactive)
-  echo "y" | ufw --force enable 2>&1 || {
-    echo "WARNING: Failed to enable ufw"
+  # Enable firewall (non-interactive) - use yes command for better compatibility
+  yes | ufw --force enable 2>&1 || {
+    echo "ERROR: Failed to enable ufw - firewall may not be active!"
+    echo "Attempting to check status..."
+    ufw status || true
   }
+  
+  # Verify firewall is enabled
+  sleep 1
+  if ufw status | grep -q "Status: active"; then
+    echo "Firewall is active"
+  else
+    echo "WARNING: Firewall may not be active - check manually with: sudo ufw status"
+  fi
   
   # Verify firewall rules
   echo "Firewall rules configured:"
-  ufw status numbered 2>&1 | grep -E "($PYTHON_PORT|$JUPYTER_PORT|$TURN_PORT|22)" || true
+  ufw status numbered 2>&1 | grep -E "($PYTHON_PORT|$JUPYTER_PORT|$TURN_PORT|22)" || {
+    echo "WARNING: Could not find expected firewall rules"
+    echo "Current UFW status:"
+    ufw status verbose 2>&1 || true
+  }
 else
   echo "WARNING: ufw not found, ports may not be exposed. Consider configuring DigitalOcean Cloud Firewall via API."
 fi
