@@ -324,7 +324,9 @@ class MonitorService:
             logger.error(f"Error marking session as started: {e}")
     
     async def _check_credits_remaining(self):
-        """Check if user has enough credits remaining based on elapsed time"""
+        """Check if user has enough credits remaining based on elapsed time
+        Uses the new credit system: subscription credits (reset monthly) + purchased credits (never reset)
+        """
         try:
             result = await self._call_function('checkCreditsRemaining', {
                 'instanceId': self.instance_id
@@ -339,7 +341,14 @@ class MonitorService:
             credits_needed = result.get('creditsNeeded', 0)
             should_terminate = result.get('shouldTerminate', False)
             
-            logger.info(f"Credits check: remaining={credits_remaining:.2f} hours, needed={credits_needed:.2f} hours, has_enough={has_enough_credits}")
+            # Get breakdown if available (new credit system)
+            subscription_credits = result.get('subscriptionCredits')
+            purchased_credits = result.get('purchasedCredits')
+            
+            if subscription_credits is not None and purchased_credits is not None:
+                logger.info(f"Credits check: total={credits_remaining:.2f} hours (subscription={subscription_credits:.2f}, purchased={purchased_credits:.2f}), needed={credits_needed:.2f} hours, has_enough={has_enough_credits}")
+            else:
+                logger.info(f"Credits check: remaining={credits_remaining:.2f} hours, needed={credits_needed:.2f} hours, has_enough={has_enough_credits}")
             
             if should_terminate:
                 logger.warning(f"User {self.user_id} has insufficient credits remaining")
