@@ -35,6 +35,9 @@ RUN apt-get clean && \
         procps \
         openssl \
         ca-certificates && \
+    # Create symlinks for /usr/local/bin/python and python3 (supervisord.conf expects these)
+    ln -sf /usr/bin/python3 /usr/local/bin/python && \
+    ln -sf /usr/bin/python3 /usr/local/bin/python3 && \
     rm -rf /var/lib/apt/lists/*
 
 # Layer 3: Install supervisor via pip (more reliable than apt)
@@ -143,6 +146,11 @@ RUN set -eux; \
     else \
         pip3 install --no-cache-dir --ignore-installed -r /tmp/requirements.txt; \
     fi && \
+    # Verify Python and Jupyter are accessible
+    test -f /usr/local/bin/python || (echo "ERROR: /usr/local/bin/python not found" && exit 1) && \
+    test -f /usr/local/bin/jupyter || (echo "ERROR: /usr/local/bin/jupyter not found" && exit 1) && \
+    /usr/local/bin/python --version && \
+    /usr/local/bin/jupyter --version && \
     rm -f /tmp/requirements.txt
 
 # Layer 10: Create directories and set up structure

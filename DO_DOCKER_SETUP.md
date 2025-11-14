@@ -5,9 +5,9 @@ This guide explains how to build, deploy, and maintain the TensorDock Docker ima
 ## Overview
 
 The Docker approach uses:
-- **DigitalOcean Docker 1-Click App**: Pre-configured droplet with Docker installed
+- **Standard Ubuntu Image**: Base Ubuntu 22.04 droplet (Docker installed by startup script)
 - **Pre-built Docker Image**: CPU-only image with all dependencies pre-installed
-- **Fast Startup**: Container starts in 30-60 seconds (vs 5-10 minutes with full installation)
+- **Fast Startup**: Container starts in 1-2 minutes (Docker install) + 30-60 seconds (container start) vs 5-10 minutes with full installation
 
 The Docker image includes:
 - Ubuntu 22.04 base (CPU-only, no PyTorch/CUDA)
@@ -89,20 +89,20 @@ In Firestore, update the `admin/image` document:
 {
   "doDockerImage": "bluestarburst/tensordock-do:latest",
   "doDockerStartupScriptUrl": "https://raw.githubusercontent.com/bluestarburst/tensorboard/refs/heads/main/tensordock/do-docker-startup.sh",
-  "doImage": "docker-22-04"
+  "doImage": "ubuntu-22-04-x64"
 }
 ```
 
 **Configuration Options:**
 - `doDockerImage`: Docker image name (default: `bluestarburst/tensordock-do:latest`)
 - `doDockerStartupScriptUrl`: URL to Docker startup script (default: GitHub raw URL)
-- `doImage`: DigitalOcean base image (default: `docker-22-04`, options: `docker-20-04`, `docker-22-04`)
+- `doImage`: DigitalOcean base image (default: `ubuntu-22-04-x64` - Docker will be installed by startup script)
 
 ### 2. How It Works
 
-1. **Droplet Creation**: DigitalOcean creates a droplet from Docker 1-Click App image
+1. **Droplet Creation**: DigitalOcean creates a droplet from standard Ubuntu 22.04 image
 2. **Bootstrap Script**: Cloud-init runs bootstrap script that sets environment variables
-3. **Docker Startup**: Bootstrap downloads and executes `do-docker-startup.sh`
+3. **Docker Installation**: Bootstrap downloads and executes `do-docker-startup.sh`, which installs Docker if needed
 4. **Container Launch**: Startup script pulls Docker image and runs container with proper port mappings
 5. **Services Start**: Container runs supervisord which starts Jupyter, Python server, and TURN server
 

@@ -1,8 +1,7 @@
 #!/bin/bash
 # DigitalOcean Docker Startup Script for TensorDock
-# This script runs on a DigitalOcean droplet with Docker pre-installed (Docker 1-Click App)
-# It pulls the TensorDock Docker image and runs it with proper configuration
-# Expected startup time: 30-60 seconds (vs 5-10 minutes with full installation)
+# This script installs Docker (if needed) and runs the TensorDock Docker container
+# Expected startup time: 1-2 minutes (Docker install) + 30-60 seconds (container start)
 
 set -o pipefail
 LOG_FILE="/var/log/tensordock-docker-setup.log"
@@ -26,6 +25,36 @@ log() {
 
 log "Starting TensorDock Docker container setup"
 
+# Install Docker if not already installed
+if ! command -v docker >/dev/null 2>&1; then
+    log "Docker not found, installing Docker..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gnupg \
+        lsb-release
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    echo \
+        "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+        $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    apt-get update -qq
+    apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    rm -rf /var/lib/apt/lists/*
+    # Start and enable Docker service
+    systemctl start docker || true
+    systemctl enable docker || true
+    log "Docker installed successfully"
+else
+    log "Docker is already installed"
+    # Ensure Docker service is running
+    systemctl start docker || true
+    systemctl enable docker || true
+fi
+
 # Wait for Docker to be ready
 log "Waiting for Docker to be ready..."
 MAX_ATTEMPTS=30
@@ -41,7 +70,7 @@ while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
 done
 
 if ! docker info >/dev/null 2>&1; then
-    log "ERROR: Docker is not available"
+    log "ERROR: Docker is not available after installation"
     exit 1
 fi
 
@@ -95,12 +124,12 @@ if command -v ufw >/dev/null 2>&1; then
     log "Configuring firewall rules to expose ports..."
     
     # 1. Allow SSH first (CRITICAL)
-    ufw allow 22/tcp
+    ufw allow 22/tcp comment 'Allow SSH'
     
-    # 2. Allow application ports
-    ufw allow $PYTHON_PORT/tcp   # Python server
-    ufw allow $JUPYTER_PORT/tcp  # Jupyter
-    ufw allow $TURN_PORT/udp      # TURN server
+    # 2. Allow application ports (must match Docker port mappings)
+    ufw allow $PYTHON_PORT/tcp comment 'Allow Python server' || true
+    ufw allow $JUPYTER_PORT/tcp comment 'Allow Jupyter' || true
+    ufw allow $TURN_PORT/udp comment 'Allow TURN server' || true
     
     # 3. Set ENABLED=yes in config file
     sed -i 's/^ENABLED=.*/ENABLED=yes/' /etc/ufw/ufw.conf
@@ -120,18 +149,20 @@ else
 fi
 
 # Run Docker container
+# IMPORTANT: Port mappings use identity mapping (external:internal) to ensure
+# TURN server uses the same port internally and externally (required for WebRTC)
 log "Starting Docker container: $CONTAINER_NAME"
-log "Port mappings:"
-log "  Python server: $PYTHON_PORT/tcp"
-log "  Jupyter: $JUPYTER_PORT/tcp"
-log "  TURN server: $TURN_PORT/udp"
+log "Port mappings (external:internal):"
+log "  Python server: $PYTHON_PORT:$PYTHON_PORT/tcp"
+log "  Jupyter: $JUPYTER_PORT:$JUPYTER_PORT/tcp"
+log "  TURN server: $TURN_PORT:$TURN_PORT/udp (CRITICAL: same port internally and externally)"
 
 docker run -d \
     --name "$CONTAINER_NAME" \
     --restart unless-stopped \
-    -p "${PYTHON_PORT}:8765/tcp" \
-    -p "${JUPYTER_PORT}:8888/tcp" \
-    -p "${TURN_PORT}:50000/udp" \
+    -p "${PYTHON_PORT}:${PYTHON_PORT}/tcp" \
+    -p "${JUPYTER_PORT}:${JUPYTER_PORT}/tcp" \
+    -p "${TURN_PORT}:${TURN_PORT}/udp" \
     -e USER_ID="${USER_ID:-}" \
     -e INSTANCE_ID="${INSTANCE_ID:-}" \
     -e RESOURCE_TYPE="${RESOURCE_TYPE:-}" \
